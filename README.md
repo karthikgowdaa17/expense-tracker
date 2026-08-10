@@ -1,36 +1,157 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Expense Tracker
+
+A modern, full‑stack personal finance dashboard built with **Next.js 16**, **React 19**, **Tailwind CSS**, and **Supabase**. Track income, expenses, budgets, and recurring transactions with interactive charts and a clean, responsive UI.
+
+---
+
+## Live Demo
+
+🔗 **[https://expense-tracker-one-nu-55.vercel.app](https://expense-tracker-one-nu-55.vercel.app)**
+
+---
+
+## Features
+
+| Area | What works today |
+|------|------------------|
+| **Authentication** | Email/password sign‑up & sign‑in via Supabase Auth (protected routes, session persistence). |
+| **Dashboard** | Monthly overview, net‑worth cards, recent transactions, category breakdown charts. |
+| **Expense & Income Tracking** | Add, edit, delete transactions; choose category, account, payment method, notes. |
+| **Transactions** | Paginated, filterable list with search, date range, type, category, account. |
+| **Categories** | Default + custom categories (icon + colour), CRUD via modal dialogs. |
+| **Budgets** | Per‑category monthly budgets with progress bars and over‑budget alerts. |
+| **Recurring Transactions** | Define frequency (daily…yearly), start/end dates; UI for managing recurring transactions. |
+| **Analytics / Charts** | Recharts‑powered line & bar charts for income vs expense, savings rate, category trends. |
+| **Profile / Settings** | Editable profile (name, avatar URL), theme (light/dark/system), currency, financial‑year start month. |
+| **Currency & Financial‑Year** | Multi‑currency support (INR, USD, EUR, GBP) and configurable fiscal year start. |
+| **Data Persistence** | All data stored in Supabase (PostgreSQL) with Row‑Level Security. |
+
+
+---
+
+## Tech Stack
+
+| Layer | Technologies |
+|-------|--------------|
+| **Framework** | Next.js 16 (App Router), React 19 |
+| **Styling** | Tailwind CSS 4, Radix UI primitives, `clsx` / `tailwind-merge` |
+| **State & Forms** | React Hook Form + Zod, Zustand (global UI state) |
+| **Charts** | Recharts |
+| **Auth & DB** | Supabase (`@supabase/ssr`, `@supabase/supabase-js`) |
+| **Date handling** | date‑fns |
+| **Icons** | Lucide React |
+| **Notifications** | Sonner (toast) |
+| **Type safety** | TypeScript 5, ESLint 9 (Next.js config) |
+| **Build / Deploy** | Vercel (auto‑deploy from GitHub) |
+
+---
+
+## Project Structure
+
+```
+src/
+├─ app/                     # Next.js App Router pages & layouts
+│  ├─ (dashboard)/          # Protected dashboard routes
+│  │  ├─ dashboard/         # Main overview
+│  │  ├─ transactions/      # Transaction list & detail
+│  │  ├─ categories/        # Category management
+│  │  ├─ budgets/           # Budget UI
+│  │  ├─ recurring/         # Recurring transactions
+│  │  ├─ analytics/         # Charts & insights
+│  │  ├─ settings/          # Profile, preferences, data tools
+│  │  └─ layout.tsx         # Sidebar + header wrapper
+│  ├─ auth/                 # Login / signup / callback
+│  └─ layout.tsx            # Root layout, ProvidersWrapper
+├─ components/
+│  ├─ ui/                   # Radix‑based reusable UI primitives
+│  ├─ dashboard/            # Dashboard‑specific widgets
+│  ├─ layout/               # Header, Sidebar, DashboardLayout
+│  └─ providers-wrapper.tsx # ThemeProvider, SupabaseProvider, Toaster
+├─ lib/
+│  ├─ supabase/             # Client & server Supabase helpers
+│  └─ calculation-engine.ts # Aggregations, metrics, chart data prep
+├─ utils/
+│  ├─ currency.ts           # Formatting, conversion helpers
+│  └─ date.ts               # Fiscal‑year, range utilities
+└─ types/
+   └─ index.ts              # Shared TypeScript interfaces
+supabase/
+└─ schema.sql               # Full DB schema (tables, RLS, triggers)
+```
+
+---
 
 ## Getting Started
 
-First, run the development server:
+### Prerequisites
+- Node.js ≥ 20
+- A Supabase project (free tier works)
 
+### Installation
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+# 1. Clone the repo
+git clone https://github.com/FINISHER360/expense-tracker.git
+cd expense-tracker
+
+# 2. Install dependencies
+npm install   # or pnpm install / yarn install
+
+# 3. Create environment file
+touch .env.local
+# Edit .env.local with your Supabase credentials (see below)
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+### Environment Variables
+Create a `.env.local` file (never commit it) with the following keys:
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+```env
+NEXT_PUBLIC_SUPABASE_URL=your-project-url
+NEXT_PUBLIC_SUPABASE_ANON_KEY=your-anon-key
+```
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+> **Security note:** `.env.local` is git‑ignored. Do **not** expose real keys in the repository or CI logs.
 
-## Learn More
+### Run the development server
+```bash
+npm run dev
+```
+Open http://localhost:3000 – you’ll land on the login page; create an account to explore the dashboard.
 
-To learn more about Next.js, take a look at the following resources:
+### Production build
+```bash
+npm run build
+npm start
+```
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+---
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+## Deployment
 
-## Deploy on Vercel
+The project is deployed on **Vercel** and linked to the GitHub repository.  
+Every push to `main` triggers a new preview/production deployment automatically.
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+*Required Vercel env vars*: `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY` (add them in the Vercel dashboard → Settings → Environment Variables).
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+---
+
+## Future Improvements
+
+- **Avatar upload** – integrate Supabase Storage for profile pictures.  
+- **Multi‑account transfers** – UI + backend for moving money between accounts.  
+- **Advanced budgeting** – roll‑over, envelope budgeting, alerts via email/push.  
+- **PDF/CSV export** – richer reporting for accountants.  
+- **Mobile‑first PWA** – offline support, installable web app.  
+- **Automated recurring generation** – Supabase pg_cron or Edge Function.  
+- **Unit & integration tests** – Vitest + React Testing Library + Playwright.  
+- **Dark‑mode persistence** – already via `next-themes`, but add system‑sync toggle.  
+
+---
+
+## Author
+
+**Karthik Gowda**  
+🔗 [GitHub](https://github.com/karthikgowda) · [LinkedIn](https://linkedin.com/in/karthikgowda)
+
+---
+
+*Built with ❤️ using Next.js, Supabase, and Tailwind CSS.*
