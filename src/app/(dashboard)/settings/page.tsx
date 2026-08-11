@@ -147,6 +147,20 @@ export default function SettingsPage() {
     }
   }, [supabase]);
 
+  const updateUserSettings = async (updates: Partial<{ currency: string; financial_year_start_month: number }>) => {
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) return;
+      const { error } = await supabase.from('user_settings').update(updates).eq('user_id', user.id);
+      if (error) throw error;
+      // refresh settings
+      const { data } = await supabase.from('user_settings').select('*').eq('user_id', user.id).single();
+      if (data) setSettings(data);
+    } catch (err) {
+      console.error('Failed to update settings:', err);
+    }
+  };
+
   useEffect(() => {
     fetchData();
   }, [fetchData]);
@@ -283,18 +297,148 @@ export default function SettingsPage() {
         const { data: { user } } = await supabase.auth.getUser();
         if (!user) return;
 
-        // Import logic would go here
-        alert('Import functionality would be implemented here');
+        // Import categories
+        if (data.categories?.length) {
+          const catRows = data.categories.map((c: any) => ({
+            ...c,
+            user_id: user.id,
+            id: undefined, // let DB generate
+            created_at: undefined,
+          }));
+          const { error } = await supabase.from('categories').upsert(catRows, {
+            onConflict: 'user_id,name,type',
+            ignoreDuplicates: true,
+          });
+          if (error) throw new Error(`Categories import failed: ${error.message}`);
+        }
+
+        // Import accounts
+        if (data.accounts?.length) {
+          const accRows = data.accounts.map((a: any) => ({
+            ...a,
+            user_id: user.id,
+            id: undefined,
+            created_at: undefined,
+            updated_at: undefined,
+          }));
+          const { error } = await supabase.from('accounts').upsert(accRows, {
+            onConflict: 'user_id,name',
+            ignoreDuplicates: true,
+          });
+          if (error) throw new Error(`Accounts import failed: ${error.message}`);
+        }
+
+        // Import budgets
+        if (data.budgets?.length) {
+          const budRows = data.budgets.map((b: any) => ({
+            ...b,
+            user_id: user.id,
+            id: undefined,
+            created_at: undefined,
+            updated_at: undefined,
+          }));
+          const { error } = await supabase.from('budgets').upsert(budRows, {
+            onConflict: 'user_id,category_id,month',
+            ignoreDuplicates: true,
+          });
+          if (error) throw new Error(`Budgets import failed: ${error.message}`);
+        }
+
+        // Import recurring transactions
+        if (data.recurring_transactions?.length) {
+          const recRows = data.recurring_transactions.map((r: any) => ({
+            ...r,
+            user_id: user.id,
+            id: undefined,
+            created_at: undefined,
+            updated_at: undefined,
+          }));
+          const { error } = await supabase.from('recurring_transactions').upsert(recRows, {
+            onConflict: 'user_id,id',
+            ignoreDuplicates: true,
+          });
+          if (error) throw new Error(`Recurring import failed: ${error.message}`);
+        }
+
+        // Import transactions (check duplicates)
+        if (data.transactions?.length) {
+          // fetch existing to avoid duplicates
+          const dates = data.transactions.map((t: any) => t.date).sort();
+          const minDate = dates[0];
+          const maxDate = dates[dates.length - 1];
+          const { data: existing, error: existingError } = await supabase
+            .from('transactions')
+            .select('date,type,amount,category,description,payment_method,account,notes')
+            .eq('user_id', user.id)
+            .gte('date', minDate)
+            .lte('date', maxDate);
+
+          if (existingError) throw new Error(`Could not check existing transactions: ${existingError.message}`);
+
+          const keyOf = (t: any) =>
+            [t.date, t.type, Number(t.amount).toFixed(2), t.category, t.description, t.payment_method, t.account, t.notes ?? ''].join('|');
+          const existingKeys = new Set((existing ?? []).map(keyOf));
+
+          const newRows = data.transactions
+            .filter((t: any) => !existingKeys.has(keyOf(t)))
+            .map((t: any) => ({
+              ...t,
+              user_id: user.id,
+              id: undefined,
+              created_at: undefined,
+              updated_at: undefined,
+              amount: Math.round(Number(t.amount) * 100) / 100,
+            }));
+
+          if (newRows.length) {
+            const batchSize = 50;
+            for (let i = 0; i < newRows.length; i += batchSize) {
+              const batch = newRows.slice(i, i + batchSize);
+              const { error } = await supabase.from('transactions').insert(batch);
+              if (error) throw new Error(`Transactions import failed: ${error.message}`);
+            }
+          }
+
+          alert(`Import completed. ${newRows.length} new transactions added.`);
+        } else {
+          alert('Import completed.');
+        }
+        // refresh UI
+        fetchData();
       } catch (err) {
         console.error('Failed to import data:', err);
+        alert(err instanceof Error ? err.message : 'Import failed');
       }
     };
     reader.readAsText(file);
   };
 
   const handleResetData = async () => {
-    // This would be implemented with proper confirmation
-    alert('Reset data functionality would be implemented here');
+    const confirmed = window.confirm('This will permanently delete ALL your data (transactions, categories, budgets, accounts, recurring transactions, settings). This cannot be undone. Are you sure?');
+    if (!confirmed) return;
+    const doubleConfirmed = window.confirm('Type "DELETE" in the next prompt to confirm.');
+    if (!doubleConfirmed) return;
+    const text = window.prompt('Type DELETE to confirm');
+    if (text !== 'DELETE') return;
+
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) return;
+
+      // Delete in order respecting FK
+      await supabase.from('transactions').delete().eq('user_id', user.id);
+      await supabase.from('budgets').delete().eq('user_id', user.id);
+      await supabase.from('recurring_transactions').delete().eq('user_id', user.id);
+      await supabase.from('categories').delete().eq('user_id', user.id);
+      await supabase.from('accounts').delete().eq('user_id', user.id);
+      await supabase.from('user_settings').delete().eq('user_id', user.id);
+      // profiles keep (auth user)
+      alert('All data has been deleted.');
+      fetchData();
+    } catch (err) {
+      console.error('Failed to reset data:', err);
+      alert('Reset failed');
+    }
   };
 
   if (loading) {
@@ -309,14 +453,13 @@ export default function SettingsPage() {
       </div>
 
       <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as 'general' | 'categories' | 'accounts' | 'data' | 'profile')}>
-        <TabsList className="grid w-full grid-cols-5">
-          <TabsTrigger value="general">General</TabsTrigger>
-          <TabsTrigger value="categories">Categories</TabsTrigger>
-          <TabsTrigger value="accounts">Accounts</TabsTrigger>
-          <TabsTrigger value="profile">Profile</TabsTrigger>
-          <TabsTrigger value="data">Data</TabsTrigger>
-          <TabsTrigger value="data">Data</TabsTrigger>
-        </TabsList>
+<TabsList className="grid w-full grid-cols-5">
+            <TabsTrigger value="general">General</TabsTrigger>
+            <TabsTrigger value="categories">Categories</TabsTrigger>
+            <TabsTrigger value="accounts">Accounts</TabsTrigger>
+            <TabsTrigger value="profile">Profile</TabsTrigger>
+            <TabsTrigger value="data">Data</TabsTrigger>
+          </TabsList>
 
         <TabsContent value="general" className="space-y-6">
           <Card>
@@ -343,7 +486,7 @@ export default function SettingsPage() {
                   <p className="font-medium">Currency</p>
                   <p className="text-sm text-muted-foreground">Default currency for all amounts</p>
                 </div>
-                <Select value={settings?.currency || 'INR'} onValueChange={(v) => { console.log('Currency changed to:', v); }}>
+                <Select value={settings?.currency || 'INR'} onValueChange={async (v) => { await updateUserSettings({ currency: v }); }}>
                   <SelectTrigger className="w-[200px]"><SelectValue /></SelectTrigger>
                   <SelectContent>
                     <SelectItem value="INR">Indian Rupee (₹)</SelectItem>
@@ -366,7 +509,7 @@ export default function SettingsPage() {
                   <p className="font-medium">Financial Year Start</p>
                   <p className="text-sm text-muted-foreground">Month when financial year begins (India: April)</p>
                 </div>
-                <Select value={String(settings?.financial_year_start_month || 4)} onValueChange={(v) => { /* update settings */ }}>
+                <Select value={String(settings?.financial_year_start_month || 4)} onValueChange={async (v) => { await updateUserSettings({ financial_year_start_month: parseInt(v, 10) }); }}>
                   <SelectTrigger className="w-[200px]"><SelectValue /></SelectTrigger>
                   <SelectContent>
                     {Array.from({ length: 12 }, (_, i) => (

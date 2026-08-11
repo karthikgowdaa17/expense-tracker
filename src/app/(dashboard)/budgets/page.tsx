@@ -31,6 +31,7 @@ type BudgetFormData = z.infer<typeof budgetSchema>;
 export default function BudgetsPage() {
   const [budgets, setBudgets] = useState<Budget[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
+  const [spending, setSpending] = useState<Record<string, number>>({});
   const [currentMonth, setCurrentMonth] = useState(getMonthKey(getCurrentMonthStart()));
   const [loading, setLoading] = useState(true);
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -58,13 +59,31 @@ export default function BudgetsPage() {
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) return;
 
-      const [budRes, catRes] = await Promise.all([
+      const { start, end } = getMonthRange(parseMonthKey(currentMonth));
+
+      const [budRes, catRes, txRes] = await Promise.all([
         supabase.from('budgets').select('*').eq('user_id', user.id).eq('month', currentMonth),
         supabase.from('categories').select('*').eq('user_id', user.id).eq('type', 'expense'),
+        supabase
+          .from('transactions')
+          .select('category, amount')
+          .eq('user_id', user.id)
+          .eq('type', 'expense')
+          .gte('date', start.toISOString().split('T')[0])
+          .lte('date', end.toISOString().split('T')[0]),
       ]);
 
       if (budRes.data) setBudgets(budRes.data);
       if (catRes.data) setCategories(catRes.data);
+
+      // compute spending per category name
+      const spendMap: Record<string, number> = {};
+      if (txRes.data) {
+        txRes.data.forEach((t) => {
+          spendMap[t.category] = (spendMap[t.category] || 0) + t.amount;
+        });
+      }
+      setSpending(spendMap);
     } catch (err) {
       console.error('Failed to load budgets:', err);
     } finally {
@@ -201,12 +220,22 @@ export default function BudgetsPage() {
                       </div>
                     </div>
                     
-                    {budgetAmount > 0 && (
-                      <div className="w-48">
-                        <Progress value={0} className="h-2 mb-1" />
-                        <p className="text-xs text-muted-foreground text-right">Loading...</p>
-                      </div>
-                    )}
+{budgetAmount > 0 && (
+                       <div className="w-48">
+                         {(() => {
+                           const spent = spending[cat.name] || 0;
+                           const pct = budgetAmount > 0 ? Math.min((spent / budgetAmount) * 100, 100) : 0;
+                           return (
+                             <>
+                               <Progress value={pct} className="h-2 mb-1" />
+                               <p className="text-xs text-muted-foreground text-right">
+                                 {formatCurrency(spent)} / {formatCurrency(budgetAmount)} ({pct.toFixed(0)}%)
+                               </p>
+                             </>
+                           );
+                         })()}
+                       </div>
+                     )}
                     
                     <div className="flex items-center gap-2">
                       <Button variant="outline" size="icon" onClick={() => handleOpenDialog(budget!)}>
