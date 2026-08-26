@@ -43,7 +43,14 @@ export default function DashboardPage() {
       fetchData();
     });
 
-    return () => subscription.unsubscribe();
+    const handleTransactionsUpdated = () => {
+      fetchData();
+    };
+    window.addEventListener('transactions-updated', handleTransactionsUpdated);
+    return () => {
+      subscription.unsubscribe();
+      window.removeEventListener('transactions-updated', handleTransactionsUpdated);
+    };
   }, [currentMonth]);
 
   const fetchData = async () => {

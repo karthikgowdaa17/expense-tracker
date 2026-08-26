@@ -12,6 +12,7 @@ import { formatDisplayDate } from '@/utils/date';
 import { createClient } from '@/lib/supabase/client';
 import { Transaction, TransactionType, PaymentMethod, AccountType } from '@/types';
 import { Plus, Search, Filter, ChevronDown, Edit, Trash2, Copy, Loader2, MoreHorizontal } from 'lucide-react';
+import { toast } from 'sonner';
 import { cn } from '@/utils/currency';
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from '@/components/ui/dropdown-menu';
 import { AlertDialog, AlertDialogTrigger, AlertDialogContent, AlertDialogHeader, AlertDialogTitle, AlertDialogDescription, AlertDialogAction, AlertDialogCancel } from '@/components/ui/alert-dialog';
@@ -141,10 +142,14 @@ export default function TransactionsPage() {
 
   const handleSaveEdit = async (tx: Transaction) => {
     try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) return;
+
       const { error } = await supabase
         .from('transactions')
         .update(editForm)
-        .eq('id', tx.id);
+        .eq('id', tx.id)
+        .eq('user_id', user.id);
 
       if (error) throw error;
       
@@ -158,16 +163,55 @@ export default function TransactionsPage() {
 
   const handleDelete = async (tx: Transaction) => {
     try {
-      const { error } = await supabase
+      console.log("=== DELETE DEBUG START ===");
+      console.log("Transaction ID:", tx.id);
+      console.log("Transaction user_id:", tx.user_id);
+      console.log("Transaction:", tx);
+      
+      const { data: { user } } = await supabase.auth.getUser();
+      console.log("Auth user ID:", user?.id);
+      
+      if (!user) {
+        console.error('No authenticated user found');
+        toast.error('Not authenticated');
+        console.log("=== DELETE DEBUG END ===");
+        return;
+      }
+      
+      const { error, data } = await supabase
         .from('transactions')
         .delete()
-        .eq('id', tx.id);
+        .eq('id', tx.id)
+        .eq('user_id', user.id)
+        .select();
 
-      if (error) throw error;
+      console.log("Supabase delete data:", data);
+      console.log("Supabase delete error:", error);
+      console.log("Deleted row count:", data?.length ?? 0);
+      console.log("=== DELETE DEBUG END ===");
+
+      if (error) {
+        console.error('Supabase delete error:', error);
+        toast.error(`Delete failed: ${error.message}`);
+        throw error;
+      }
       
-      setTransactions(prev => prev.filter(t => t.id !== tx.id));
+      if (!data || data.length === 0) {
+        const errMsg = 'Delete succeeded but no row was removed (possible RLS or ID mismatch)';
+        console.error(errMsg);
+        toast.error(errMsg);
+        return;
+      }
+      
+      // Refetch to keep UI in sync with DB
+      await fetchData();
+      toast.success('Transaction deleted');
+      // Notify other components (e.g., Dashboard) to refresh
+      window.dispatchEvent(new CustomEvent('transactions-updated'));
+      router.refresh();
     } catch (err) {
       console.error('Failed to delete transaction:', err);
+      console.log("=== DELETE DEBUG END ===");
     }
   };
 
@@ -176,7 +220,13 @@ export default function TransactionsPage() {
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) return;
 
-      const newTx = { ...tx, id: crypto.randomUUID(), created_at: new Date().toISOString(), updated_at: new Date().toISOString() };
+      const newTx = { 
+        ...tx, 
+        id: crypto.randomUUID(), 
+        created_at: new Date().toISOString(), 
+        updated_at: new Date().toISOString(),
+        description: tx.description + ' (copy)',
+      };
       delete (newTx as any).id;
 
       const { data, error } = await supabase

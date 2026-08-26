@@ -52,19 +52,18 @@ export class CalculationEngine {
   }
 
   private getTransactionsForPeriod(start: Date, end: Date): Transaction[] {
-    return this.transactions.filter(t => {
-      const txDate = new Date(t.date);
-      return txDate >= start && txDate <= end;
-    });
+    const startStr = start.toISOString().split('T')[0];
+    // end is exclusive: first day of next month
+    const endStr = end.toISOString().split('T')[0];
+    return this.transactions.filter(t => t.date >= startStr && t.date < endStr);
   }
 
   private getTransactionsByType(type: Transaction['type'], start?: Date, end?: Date): Transaction[] {
     let filtered = this.transactions.filter(t => t.type === type);
     if (start && end) {
-      filtered = filtered.filter(t => {
-        const txDate = new Date(t.date);
-        return txDate >= start && txDate <= end;
-      });
+      const startStr = start.toISOString().split('T')[0];
+      const endStr = end.toISOString().split('T')[0];
+      filtered = filtered.filter(t => t.date >= startStr && t.date < endStr);
     }
     return filtered;
   }

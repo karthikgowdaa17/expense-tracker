@@ -5,6 +5,7 @@ import { createClient } from '@/lib/supabase/client';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Loader2, Upload, CheckCircle, AlertCircle } from 'lucide-react';
+import { generateTransactionFingerprint, deduplicateTransactions } from '@/utils/fingerprint';
 
 type Transaction = {
   date: string;
@@ -102,77 +103,49 @@ export default function ImportPage() {
         }
       }
 
-      // Find date range
-      const dates = transactions.map((t) => t.date).sort();
-      const minDate = dates[0];
-      const maxDate = dates[dates.length - 1];
+      // Deduplicate within the uploaded file first (using fingerprint for in-memory dedup)
+      const transactionsWithUserId = transactions.map(t => ({ ...t, userId: user.id }));
+      const uniqueTransactions = deduplicateTransactions(transactionsWithUserId);
 
-      // Check existing transactions to prevent duplicates
-      const { data: existing, error: existingError } = await supabase
-        .from('transactions')
-        .select(
-          'date,type,amount,category,description,payment_method,account,notes'
-        )
-        .eq('user_id', user.id)
-        .gte('date', minDate)
-        .lte('date', maxDate);
+      // Prepare rows for upsert (database trigger will auto-generate fingerprint)
+      const rowsToUpsert = uniqueTransactions.map((t) => ({
+        user_id: user.id,
+        date: t.date,
+        type: t.type,
+        amount: Math.round(Number(t.amount) * 100) / 100,
+        category: t.category,
+        description: t.description,
+        payment_method: t.payment_method,
+        account: t.account,
+        notes: t.notes ?? '',
+      }));
 
-      if (existingError) {
-        throw new Error(
-          `Could not check existing transactions: ${existingError.message}`
-        );
-      }
-
-      const keyOf = (t: Transaction) =>
-        [
-          t.date,
-          t.type,
-          Number(t.amount).toFixed(2),
-          t.category,
-          t.description,
-          t.payment_method,
-          t.account,
-          t.notes ?? '',
-        ].join('|');
-
-      const existingKeys = new Set(
-        (existing ?? []).map(keyOf)
-      );
-
-      const newRows = transactions
-        .filter((t) => !existingKeys.has(keyOf(t)))
-        .map((t) => ({
-          ...t,
-          user_id: user.id,
-          amount: Math.round(Number(t.amount) * 100) / 100,
-        }));
-
-      if (!newRows.length) {
-        setMessage(
-          `Nothing new to import. All ${transactions.length} transactions already exist.`
-        );
-        return;
-      }
-
-      // Insert in batches
+      // Upsert with onConflict on fingerprint (database-level deduplication via trigger)
       const batchSize = 50;
+      let insertedCount = 0;
+      let skippedCount = 0;
 
-      for (let i = 0; i < newRows.length; i += batchSize) {
-        const batch = newRows.slice(i, i + batchSize);
+      for (let i = 0; i < rowsToUpsert.length; i += batchSize) {
+        const batch = rowsToUpsert.slice(i, i + batchSize);
 
-        const { error: insertError } = await supabase
+        const { data: inserted, error: upsertError } = await supabase
           .from('transactions')
-          .insert(batch);
+          .upsert(batch, {
+            onConflict: 'user_id,fingerprint',
+            ignoreDuplicates: true,
+          })
+          .select('id');
 
-        if (insertError) {
-          throw new Error(
-            `Import failed: ${insertError.message}`
-          );
+        if (upsertError) {
+          throw new Error(`Import failed: ${upsertError.message}`);
         }
+
+        insertedCount += inserted?.length || 0;
+        skippedCount += batch.length - (inserted?.length || 0);
       }
 
       setMessage(
-        `Successfully imported ${newRows.length} transactions. ${transactions.length - newRows.length} duplicates were skipped.`
+        `Successfully imported ${insertedCount} transactions. ${skippedCount} duplicates were skipped.`
       );
     } catch (err) {
       setError(
