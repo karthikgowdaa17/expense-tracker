@@ -162,6 +162,7 @@ export default function TransactionsPage() {
   };
 
   const handleDelete = async (tx: Transaction) => {
+    console.log("HANDLE DELETE ENTERED", tx.id);
     try {
       console.log("=== DELETE DEBUG START ===");
       console.log("Transaction ID:", tx.id);
@@ -178,6 +179,7 @@ export default function TransactionsPage() {
         return;
       }
       
+      console.log("ABOUT TO CALL SUPABASE DELETE", { id: tx.id, userId: user.id });
       const { error, data } = await supabase
         .from('transactions')
         .delete()
@@ -477,21 +479,21 @@ export default function TransactionsPage() {
                                 <Copy className="mr-2 h-4 w-4" /> Duplicate
                               </DropdownMenuItem>
                               <DropdownMenuSeparator />
-                              <AlertDialog>
-                                <AlertDialogTrigger asChild>
-                                  <DropdownMenuItem className="text-destructive focus:text-destructive">
-                                    <Trash2 className="mr-2 h-4 w-4" /> Delete
-                                  </DropdownMenuItem>
-                                </AlertDialogTrigger>
-                                <AlertDialogContent>
-                                  <AlertDialogHeader>
-                                    <AlertDialogTitle>Delete transaction</AlertDialogTitle>
-                                    <AlertDialogDescription>Are you sure you want to delete this transaction? This action cannot be undone.</AlertDialogDescription>
-                                  </AlertDialogHeader>
-                                  <AlertDialogAction onClick={() => handleDelete(tx)}>Delete</AlertDialogAction>
-                                  <AlertDialogCancel>Cancel</AlertDialogCancel>
-                                </AlertDialogContent>
-                              </AlertDialog>
+<AlertDialog onOpenChange={(open) => { console.log(open ? "DELETE CONFIRM OPENED" : "DELETE CONFIRM CLOSED"); }}>
+                                 <AlertDialogTrigger asChild>
+                                   <DropdownMenuItem className="text-destructive focus:text-destructive" onClick={() => console.log("DELETE CLICK")}>
+                                     <Trash2 className="mr-2 h-4 w-4" /> Delete
+                                   </DropdownMenuItem>
+                                 </AlertDialogTrigger>
+                                 <AlertDialogContent>
+                                   <AlertDialogHeader>
+                                     <AlertDialogTitle>Delete transaction</AlertDialogTitle>
+                                     <AlertDialogDescription>Are you sure you want to delete this transaction? This action cannot be undone.</AlertDialogDescription>
+                                   </AlertDialogHeader>
+                                   <AlertDialogAction onClick={() => { console.log("DELETE CONFIRM CLICKED"); handleDelete(tx); }}>Delete</AlertDialogAction>
+                                   <AlertDialogCancel>Cancel</AlertDialogCancel>
+                                 </AlertDialogContent>
+                               </AlertDialog>
                             </DropdownMenuContent>
                           </DropdownMenu>
                         )}
