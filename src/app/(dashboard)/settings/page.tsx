@@ -593,6 +593,16 @@ export default function SettingsPage() {
 
     const category = getCategoryForTransaction(description, type, categories);
 
+    // Determine account type from notes (e.g., credit card identifiers)
+    const rawNotes = row.notes || row.note || '';
+    const lowerNotes = rawNotes.toLowerCase();
+    let accountType: 'cash' | 'bank_account' | 'credit_card' | 'savings' | 'investment' | 'other' = 'bank_account';
+    if (lowerNotes.includes('credit card') || lowerNotes.includes('slice') || lowerNotes.includes('credit_card')) {
+      accountType = 'credit_card';
+    } else if (lowerNotes.includes('cash')) {
+      accountType = 'cash';
+    }
+
     return {
       date: date.split('T')[0],
       type,
@@ -600,8 +610,8 @@ export default function SettingsPage() {
       category,
       description: description.slice(0, 200),
       payment_method: 'upi',
-      account: 'Bank Account',
-      notes: '',
+      account: accountType,
+      notes: rawNotes,
     };
   };
 

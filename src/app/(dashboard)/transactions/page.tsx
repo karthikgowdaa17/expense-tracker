@@ -49,6 +49,7 @@ export default function TransactionsPage() {
   const [showFilters, setShowFilters] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editForm, setEditForm] = useState<Partial<Transaction>>({});
+  const [transactionToDelete, setTransactionToDelete] = useState<Transaction | null>(null);
 
   const router = useRouter();
   const supabase = createClient();
@@ -162,24 +163,13 @@ export default function TransactionsPage() {
   };
 
   const handleDelete = async (tx: Transaction) => {
-    console.log("HANDLE DELETE ENTERED", tx.id);
     try {
-      console.log("=== DELETE DEBUG START ===");
-      console.log("Transaction ID:", tx.id);
-      console.log("Transaction user_id:", tx.user_id);
-      console.log("Transaction:", tx);
-      
       const { data: { user } } = await supabase.auth.getUser();
-      console.log("Auth user ID:", user?.id);
-      
       if (!user) {
-        console.error('No authenticated user found');
         toast.error('Not authenticated');
-        console.log("=== DELETE DEBUG END ===");
         return;
       }
-      
-      console.log("ABOUT TO CALL SUPABASE DELETE", { id: tx.id, userId: user.id });
+
       const { error, data } = await supabase
         .from('transactions')
         .delete()
@@ -187,24 +177,16 @@ export default function TransactionsPage() {
         .eq('user_id', user.id)
         .select();
 
-      console.log("Supabase delete data:", data);
-      console.log("Supabase delete error:", error);
-      console.log("Deleted row count:", data?.length ?? 0);
-      console.log("=== DELETE DEBUG END ===");
-
       if (error) {
-        console.error('Supabase delete error:', error);
         toast.error(`Delete failed: ${error.message}`);
-        throw error;
-      }
-      
-      if (!data || data.length === 0) {
-        const errMsg = 'Delete succeeded but no row was removed (possible RLS or ID mismatch)';
-        console.error(errMsg);
-        toast.error(errMsg);
         return;
       }
-      
+
+      if (!data || data.length === 0) {
+        toast.error('Delete succeeded but no row was removed (possible RLS or ID mismatch)');
+        return;
+      }
+
       // Refetch to keep UI in sync with DB
       await fetchData();
       toast.success('Transaction deleted');
@@ -213,7 +195,6 @@ export default function TransactionsPage() {
       router.refresh();
     } catch (err) {
       console.error('Failed to delete transaction:', err);
-      console.log("=== DELETE DEBUG END ===");
     }
   };
 
@@ -478,22 +459,13 @@ export default function TransactionsPage() {
                               <DropdownMenuItem onClick={() => handleDuplicate(tx)}>
                                 <Copy className="mr-2 h-4 w-4" /> Duplicate
                               </DropdownMenuItem>
-                              <DropdownMenuSeparator />
-<AlertDialog onOpenChange={(open) => { console.log(open ? "DELETE CONFIRM OPENED" : "DELETE CONFIRM CLOSED"); }}>
-                                 <AlertDialogTrigger asChild>
-                                   <DropdownMenuItem className="text-destructive focus:text-destructive" onClick={() => console.log("DELETE CLICK")}>
-                                     <Trash2 className="mr-2 h-4 w-4" /> Delete
-                                   </DropdownMenuItem>
-                                 </AlertDialogTrigger>
-                                 <AlertDialogContent>
-                                   <AlertDialogHeader>
-                                     <AlertDialogTitle>Delete transaction</AlertDialogTitle>
-                                     <AlertDialogDescription>Are you sure you want to delete this transaction? This action cannot be undone.</AlertDialogDescription>
-                                   </AlertDialogHeader>
-                                   <AlertDialogAction onClick={() => { console.log("DELETE CONFIRM CLICKED"); handleDelete(tx); }}>Delete</AlertDialogAction>
-                                   <AlertDialogCancel>Cancel</AlertDialogCancel>
-                                 </AlertDialogContent>
-                               </AlertDialog>
+<DropdownMenuSeparator />
+                              <DropdownMenuItem
+                                className="text-destructive focus:text-destructive"
+                                onClick={() => setTransactionToDelete(tx)}
+                              >
+                                <Trash2 className="mr-2 h-4 w-4" /> Delete
+                              </DropdownMenuItem>
                             </DropdownMenuContent>
                           </DropdownMenu>
                         )}
@@ -509,6 +481,18 @@ export default function TransactionsPage() {
           </div>
         </CardContent>
       </Card>
+
+      {/* Delete confirmation dialog */}
+      <AlertDialog open={!!transactionToDelete} onOpenChange={(open) => { if (!open) setTransactionToDelete(null); }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete transaction</AlertDialogTitle>
+            <AlertDialogDescription>Are you sure you want to delete this transaction? This action cannot be undone.</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogAction onClick={() => { if (transactionToDelete) handleDelete(transactionToDelete); }}>Delete</AlertDialogAction>
+          <AlertDialogCancel onClick={() => setTransactionToDelete(null)}>Cancel</AlertDialogCancel>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }
