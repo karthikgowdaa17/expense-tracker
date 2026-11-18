@@ -13,9 +13,11 @@ import {
   Wallet,
   BarChart2,
   Repeat,
+  FileUp,
   Settings,
   Menu,
   X,
+  CreditCard,
 } from 'lucide-react';
 import { useState } from 'react';
 
@@ -23,9 +25,11 @@ const navigation = [
   { name: 'Dashboard', href: '/dashboard', icon: LayoutDashboard },
   { name: 'Transactions', href: '/transactions', icon: List },
   { name: 'Add Transaction', href: '/add-transaction', icon: PlusCircle },
+  { name: 'Import', href: '/import', icon: FileUp },
   { name: 'Monthly', href: '/monthly', icon: Calendar },
   { name: 'Budgets', href: '/budgets', icon: Target },
   { name: 'Income', href: '/income', icon: Wallet },
+  { name: 'Payments', href: '/payments', icon: CreditCard },
   { name: 'Analytics', href: '/analytics', icon: BarChart2 },
   { name: 'Recurring', href: '/recurring', icon: Repeat },
   { name: 'Settings', href: '/settings', icon: Settings },

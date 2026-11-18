@@ -9,7 +9,7 @@ import { Label } from '@/components/ui/label';
 import { Dialog, DialogTrigger, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog';
 import { formatCurrency } from '@/utils/currency';
 import { formatDisplayDate } from '@/utils/date';
-import { createClient } from '@/lib/supabase/client';
+import { useAuth } from '@/lib/auth-context';
 import { RecurringTransaction, Frequency, PaymentMethod, AccountType } from '@/types';
 import { Plus, Loader2, Edit, Trash2, Calendar, AlertTriangle } from 'lucide-react';
 import { cn } from '@/utils/currency';
@@ -17,6 +17,8 @@ import { useForm } from '@/components/ui/form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
 import { AlertDialog, AlertDialogTrigger, AlertDialogContent, AlertDialogHeader, AlertDialogTitle, AlertDialogDescription, AlertDialogAction, AlertDialogCancel } from '@/components/ui/alert-dialog';
+import { recurringApi } from '@/lib/api/recurring';
+import { categoriesApi } from '@/lib/api/categories';
 
 const recurringSchema = z.object({
   name: z.string().min(1, 'Name is required'),
@@ -67,7 +69,7 @@ export default function RecurringPage() {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingRecurring, setEditingRecurring] = useState<RecurringTransaction | null>(null);
 
-  const supabase = createClient();
+  const { user } = useAuth();
 
   const form = useForm<RecurringFormData>({
     resolver: zodResolver(recurringSchema),
@@ -88,22 +90,21 @@ export default function RecurringPage() {
   const fetchData = useCallback(async () => {
     try {
       setLoading(true);
-      const { data: { user } } = await supabase.auth.getUser();
       if (!user) return;
 
       const [recRes, catRes] = await Promise.all([
-        supabase.from('recurring_transactions').select('*').eq('user_id', user.id).order('created_at', { ascending: false }),
-        supabase.from('categories').select('name').eq('user_id', user.id).eq('type', 'expense'),
+        recurringApi.list(),
+        categoriesApi.list(),
       ]);
 
-      if (recRes.data) setRecurring(recRes.data);
-      if (catRes.data) setCategories(catRes.data.map(c => c.name));
+      setRecurring(recRes);
+      setCategories(catRes.filter(c => c.type === 'expense').map(c => c.name));
     } catch (err) {
       console.error('Failed to load recurring transactions:', err);
     } finally {
       setLoading(false);
     }
-  }, [supabase]);
+  }, [user]);
 
   useEffect(() => {
     fetchData();
@@ -144,17 +145,12 @@ export default function RecurringPage() {
 
   const onSubmit = async (data: RecurringFormData) => {
     try {
-      const { data: { user } } = await supabase.auth.getUser();
       if (!user) return;
 
-      const payload = { ...data, user_id: user.id, is_active: true };
-
       if (editingRecurring) {
-        const { error } = await supabase.from('recurring_transactions').update(payload).eq('id', editingRecurring.id);
-        if (error) throw error;
+        await recurringApi.update(editingRecurring.id, data);
       } else {
-        const { error } = await supabase.from('recurring_transactions').insert(payload);
-        if (error) throw error;
+        await recurringApi.create({ ...data, is_active: true });
       }
 
       setDialogOpen(false);
@@ -166,8 +162,7 @@ export default function RecurringPage() {
 
   const handleDelete = async (rec: RecurringTransaction) => {
     try {
-      const { error } = await supabase.from('recurring_transactions').delete().eq('id', rec.id);
-      if (error) throw error;
+      await recurringApi.delete(rec.id);
       fetchData();
     } catch (err) {
       console.error('Failed to delete recurring transaction:', err);
@@ -176,11 +171,7 @@ export default function RecurringPage() {
 
   const handleToggleActive = async (rec: RecurringTransaction) => {
     try {
-      const { error } = await supabase
-        .from('recurring_transactions')
-        .update({ is_active: !rec.is_active })
-        .eq('id', rec.id);
-      if (error) throw error;
+      await recurringApi.toggle(rec.id);
       fetchData();
     } catch (err) {
       console.error('Failed to toggle recurring transaction:', err);

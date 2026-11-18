@@ -4,10 +4,14 @@ import { useState, useEffect } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { formatCurrency, formatCurrencyCompact } from '@/utils/currency';
-import { createClient } from '@/lib/supabase/client';
+import { useAuth } from '@/lib/auth-context';
 import { Loader2, TrendingUp, TrendingDown, Minus, Wallet, BarChart2 } from 'lucide-react';
 import { cn } from '@/utils/currency';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend, BarChart, Bar, PieChart, Pie, Cell } from 'recharts';
+import { transactionsApi } from '@/lib/api/transactions';
+import { accountsApi } from '@/lib/api/accounts';
+import { formatAccountLabel } from '@/utils/accounts';
+import type { Account } from '@/types';
 
 const COLORS = ['#10B981', '#EF4444', '#3B82F6', '#F59E0B', '#8B5CF6', '#EC4899', '#06B6D4', '#F97316', '#84CC16', '#6366F1'];
 
@@ -15,17 +19,18 @@ export default function AnalyticsPage() {
   const [timeRange, setTimeRange] = useState<'monthly' | 'quarterly' | 'yearly' | 'custom'>('monthly');
   const [analyticsData, setAnalyticsData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
+  const [selectedAccountId, setSelectedAccountId] = useState<string>('all');
+  const [accounts, setAccounts] = useState<Account[]>([]);
 
-  const supabase = createClient();
+  const { user } = useAuth();
 
   useEffect(() => {
     fetchData();
-  }, [timeRange]);
+  }, [timeRange, selectedAccountId]);
 
   const fetchData = async () => {
     try {
       setLoading(true);
-      const { data: { user } } = await supabase.auth.getUser();
       if (!user) return;
 
       const now = new Date();
@@ -45,12 +50,14 @@ export default function AnalyticsPage() {
           startDate = new Date(now.getFullYear() - 1, 0, 1);
       }
 
-      const { data } = await supabase
-        .from('transactions')
-        .select('*')
-        .eq('user_id', user.id)
-        .gte('date', startDate.toISOString().split('T')[0])
-        .order('date', { ascending: true });
+      const [data, accData] = await Promise.all([
+        transactionsApi.list({
+          dateFrom: startDate.toISOString().split('T')[0],
+          accountId: selectedAccountId !== 'all' ? selectedAccountId : undefined,
+        }),
+        accounts.length ? Promise.resolve(accounts) : accountsApi.list(),
+      ]);
+      if (!accounts.length) setAccounts(accData);
 
       if (data) {
         processData(data);
@@ -145,14 +152,25 @@ export default function AnalyticsPage() {
           <h1 className="text-3xl font-bold tracking-tight">Analytics</h1>
           <p className="text-muted-foreground">Insights into your spending patterns</p>
         </div>
-        <Select value={timeRange} onValueChange={setTimeRange as any}>
-          <SelectTrigger className="w-[200px]"><SelectValue placeholder="Time range" /></SelectTrigger>
-          <SelectContent>
-            <SelectItem value="monthly">Last 12 Months</SelectItem>
-            <SelectItem value="quarterly">Last 2 Years (Quarterly)</SelectItem>
-            <SelectItem value="yearly">Last 5 Years</SelectItem>
-          </SelectContent>
-        </Select>
+        <div className="flex items-center gap-2">
+          <Select value={selectedAccountId} onValueChange={setSelectedAccountId}>
+            <SelectTrigger className="w-[220px]"><SelectValue placeholder="All Accounts" /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All Accounts</SelectItem>
+              {accounts.map(a => (
+                <SelectItem key={a.id} value={a.id}>{formatAccountLabel(a)}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <Select value={timeRange} onValueChange={setTimeRange as any}>
+            <SelectTrigger className="w-[200px]"><SelectValue placeholder="Time range" /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="monthly">Last 12 Months</SelectItem>
+              <SelectItem value="quarterly">Last 2 Years (Quarterly)</SelectItem>
+              <SelectItem value="yearly">Last 5 Years</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
       </div>
 
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">

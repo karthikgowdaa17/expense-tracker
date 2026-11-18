@@ -8,6 +8,7 @@ export interface TransactionFingerprintInput {
   description: string;
   payment_method?: string;
   account?: string;
+  account_id?: string | null;
 }
 
 // RFC 1321 MD5 implementation (matching PostgreSQL's md5())
@@ -110,8 +111,11 @@ export function generateTransactionFingerprint(input: TransactionFingerprintInpu
   const normalizedAmount = Math.round(Number(input.amount) * 100) / 100;
   const normalizedDescription = input.description.trim().toLowerCase();
   const normalizedPayment = (input.payment_method || '').trim().toLowerCase();
-  const normalizedAccount = (input.account || '').trim().toLowerCase();
-  // Include payment_method and account to differentiate same merchant/amount/date on different accounts
+  // Account identity: prefer the stable account_id. Only legacy rows without a
+  // linked account fall back to the free-text account string. This keeps
+  // duplicate detection stable across the account migration, while making the
+  // same payment in two different accounts NOT a duplicate.
+  const accountIdentity = (input.account_id || input.account || '').trim().toLowerCase();
   const fingerprintSource = [
     input.userId,
     input.date,
@@ -119,9 +123,9 @@ export function generateTransactionFingerprint(input: TransactionFingerprintInpu
     normalizedAmount.toFixed(2),
     normalizedDescription,
     normalizedPayment,
-    normalizedAccount,
+    accountIdentity,
   ].join('|');
-  
+
   return md5(fingerprintSource);
 }
 
@@ -134,6 +138,7 @@ export function generateTransactionFingerprintFromTx(tx: Partial<Transaction> & 
     description: tx.description || '',
     payment_method: tx.payment_method,
     account: tx.account,
+    account_id: tx.account_id,
   });
 }
 

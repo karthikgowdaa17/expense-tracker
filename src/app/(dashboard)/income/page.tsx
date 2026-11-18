@@ -4,11 +4,12 @@ import { useState, useEffect, useCallback } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { formatCurrency } from '@/utils/currency';
-import { createClient } from '@/lib/supabase/client';
+import { useAuth } from '@/lib/auth-context';
 import { Loader2, ChevronLeft, ChevronRight, Wallet } from 'lucide-react';
 import { cn } from '@/utils/currency';
 import { getMonthKey, formatMonthYear, parseMonthKey, getPreviousMonth, getNextMonth, getMonthRange } from '@/utils/date';
 import { Transaction } from '@/types';
+import { transactionsApi } from '@/lib/api/transactions';
 
 export default function IncomePage() {
   const [currentMonth, setCurrentMonth] = useState(getMonthKey(new Date()));
@@ -19,23 +20,19 @@ export default function IncomePage() {
   } | null>(null);
   const [loading, setLoading] = useState(true);
 
-  const supabase = createClient();
+  const { user } = useAuth();
 
   const fetchData = useCallback(async () => {
     try {
       setLoading(true);
-      const { data: { user } } = await supabase.auth.getUser();
       if (!user) return;
 
       const { start, end } = getMonthRange(parseMonthKey(currentMonth));
-      const { data } = await supabase
-        .from('transactions')
-        .select('*')
-        .eq('user_id', user.id)
-        .eq('type', 'income')
-        .gte('date', start.toISOString().split('T')[0])
-        .lte('date', end.toISOString().split('T')[0])
-        .order('date', { ascending: false });
+      const data = await transactionsApi.list({
+        dateFrom: start.toISOString().split('T')[0],
+        dateTo: end.toISOString().split('T')[0],
+        type: 'income',
+      });
 
       if (data) {
         const total = data.reduce((sum, t) => sum + t.amount, 0);
@@ -50,7 +47,7 @@ export default function IncomePage() {
     } finally {
       setLoading(false);
     }
-  }, [currentMonth, supabase]);
+  }, [currentMonth, user]);
 
   useEffect(() => {
     fetchData();

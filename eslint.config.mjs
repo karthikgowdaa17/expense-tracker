@@ -12,6 +12,11 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    "server/**",
+    "server_backup_*/**",
+    "server_broken_attempt_*/**",
+    // Vendored third-party static assets (e.g. pdfjs worker)
+    "public/vendor/**",
   ]),
 ]);
 

@@ -14,31 +14,16 @@ import { Moon, Sun, Monitor, LogOut, User, Bell } from 'lucide-react';
 import { useTheme } from 'next-themes';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { createClient } from '@/lib/supabase/client';
-import { useEffect, useState } from 'react';
+import { useAuth } from '@/lib/auth-context';
+import { SyncStatusIndicator } from '@/components/sync/SyncStatus';
 
 export function Header() {
   const { setTheme } = useTheme();
   const router = useRouter();
-  const supabase = createClient();
-  const [userProfile, setUserProfile] = useState<{ full_name: string | null; avatar_url: string | null; email: string | null } | null>(null);
-
-  useEffect(() => {
-    const loadUser = async () => {
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) return;
-      const { data: profile } = await supabase.from('profiles').select('full_name, avatar_url').eq('id', user.id).single();
-      setUserProfile({
-        full_name: profile?.full_name ?? null,
-        avatar_url: profile?.avatar_url ?? null,
-        email: user.email ?? null,
-      });
-    };
-    loadUser();
-  }, [supabase]);
+  const { user, logout } = useAuth();
 
   const handleSignOut = async () => {
-    await supabase.auth.signOut();
+    await logout();
     router.push('/auth/login');
     router.refresh();
   };
@@ -48,6 +33,10 @@ export function Header() {
     if (email) return email.trim().charAt(0).toUpperCase();
     return 'U';
   };
+
+  const fullName = user?.profile?.full_name ?? null;
+  const avatarUrl = user?.profile?.avatar_url ?? null;
+  const email = user?.email ?? null;
 
   return (
     <header className="sticky top-0 z-30 w-full border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60 lg:static">
@@ -59,6 +48,7 @@ export function Header() {
         <div className="flex-1 lg:flex-none" />
 
         <div className="flex items-center space-x-2">
+          <SyncStatusIndicator />
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button variant="ghost" size="icon" className="h-10 w-10 rounded-full">
@@ -85,18 +75,18 @@ export function Header() {
             <DropdownMenuTrigger asChild>
               <Button variant="ghost" className="relative h-10 w-10 rounded-full">
                 <Avatar className="h-10 w-10">
-                  {userProfile?.avatar_url ? (
-                    <AvatarImage src={userProfile.avatar_url} alt={userProfile.full_name || userProfile.email || 'User'} />
+                  {avatarUrl ? (
+                    <AvatarImage src={avatarUrl} alt={fullName || email || 'User'} />
                   ) : null}
-                  <AvatarFallback>{getInitials(userProfile?.full_name ?? null, userProfile?.email ?? null)}</AvatarFallback>
+                  <AvatarFallback>{getInitials(fullName, email)}</AvatarFallback>
                 </Avatar>
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" className="w-56">
               <DropdownMenuLabel className="font-normal">
                 <div className="flex flex-col space-y-1">
-                  <p className="text-sm font-medium leading-none">{userProfile?.full_name || 'User'}</p>
-                  <p className="text-xs leading-none text-muted-foreground">{userProfile?.email || 'user@example.com'}</p>
+                  <p className="text-sm font-medium leading-none">{fullName || 'User'}</p>
+                  <p className="text-xs leading-none text-muted-foreground">{email || 'user@example.com'}</p>
                 </div>
               </DropdownMenuLabel>
               <DropdownMenuSeparator />

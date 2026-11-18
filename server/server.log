@@ -1,0 +1,10 @@
+[Migration] Skipping already applied: 001_initial_schema.sql
+[Migration] Skipping already applied: 002_auth_schema.sql
+[Migration] Skipping already applied: 003_auth_tokens.sql
+[Migration] All migrations up to date
+[Server] HTTP + WS server running on http://localhost:8080
+[Server] WebSocket available at ws://localhost:8080
+[Server] Health endpoint at http://localhost:8080/health
+[Server] Status endpoint at http://localhost:8080/api/status
+[DEV] Password reset token for test@example.com: 562ed4277c0b536943db6b630c8fc964455ac909438f24cabf13a8fefe73fc04
+[DEV] Email verification token for test@example.com: 2eba4700bfaa1dff767630dc0a7457e73e97bd7675e2e9c141be89e5ac95e1da

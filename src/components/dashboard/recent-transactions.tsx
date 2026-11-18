@@ -4,16 +4,19 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { formatCurrency } from '@/utils/currency';
 import { formatDisplayDate } from '@/utils/date';
-import { Transaction } from '@/types';
+import { Transaction, Account } from '@/types';
 import { MoreHorizontal, ChevronRight } from 'lucide-react';
 import { cn } from '@/utils/currency';
+import { accountLabelForTx, buildAccountMap } from '@/utils/accounts';
 
 interface RecentTransactionsProps {
   transactions: Transaction[];
   onViewAll: () => void;
+  accounts?: Account[];
 }
 
-export function RecentTransactions({ transactions, onViewAll }: RecentTransactionsProps) {
+export function RecentTransactions({ transactions, onViewAll, accounts }: RecentTransactionsProps) {
+  const accountMap = buildAccountMap(accounts ?? []);
   const getTypeColor = (type: Transaction['type']) => {
     switch (type) {
       case 'income': return 'text-green-600';
@@ -66,7 +69,7 @@ export function RecentTransactions({ transactions, onViewAll }: RecentTransactio
                 <div className="flex flex-col">
                   <p className="font-medium truncate">{tx.description}</p>
                   <p className="text-xs text-muted-foreground">
-                    {formatDisplayDate(tx.date)} · {tx.category} · {tx.payment_method}
+                    {formatDisplayDate(tx.date)} · {tx.category} · {tx.payment_method} · {accountLabelForTx(tx, accountMap)}
                   </p>
                 </div>
               </div>

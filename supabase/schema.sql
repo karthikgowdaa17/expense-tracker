@@ -66,6 +66,8 @@ CREATE TABLE IF NOT EXISTS public.transactions (
   description TEXT NOT NULL,
   payment_method payment_method NOT NULL,
   account TEXT NOT NULL,
+  account_id UUID REFERENCES public.accounts(id) ON DELETE SET NULL,
+  transfer_direction TEXT DEFAULT 'out' CHECK (transfer_direction IN ('in', 'out')),
   notes TEXT,
   is_recurring BOOLEAN DEFAULT FALSE,
   recurring_id UUID REFERENCES public.recurring_transactions(id) ON DELETE SET NULL,
@@ -93,6 +95,8 @@ CREATE TABLE IF NOT EXISTS public.accounts (
   user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE NOT NULL,
   name TEXT NOT NULL,
   type account_type NOT NULL,
+  bank_name TEXT,
+  account_number_last4 TEXT,
   opening_balance DECIMAL(15,2) DEFAULT 0,
   currency TEXT DEFAULT 'INR',
   is_active BOOLEAN DEFAULT TRUE,
@@ -158,13 +162,28 @@ CREATE POLICY "Users can view own settings" ON public.user_settings FOR SELECT U
 CREATE POLICY "Users can insert own settings" ON public.user_settings FOR INSERT WITH CHECK (auth.uid() = user_id);
 CREATE POLICY "Users can update own settings" ON public.user_settings FOR UPDATE USING (auth.uid() = user_id);
 
+-- A transaction may only point at an account owned by the same user
+CREATE POLICY transactions_account_owner_guard_ins ON public.transactions
+  AS RESTRICTIVE FOR INSERT
+  WITH CHECK (
+    account_id IS NULL
+    OR EXISTS (SELECT 1 FROM public.accounts a WHERE a.id = account_id AND a.user_id = auth.uid())
+  );
+CREATE POLICY transactions_account_owner_guard_upd ON public.transactions
+  AS RESTRICTIVE FOR UPDATE
+  USING (account_id IS NULL OR EXISTS (SELECT 1 FROM public.accounts a WHERE a.id = account_id AND a.user_id = auth.uid()))
+  WITH CHECK (account_id IS NULL OR EXISTS (SELECT 1 FROM public.accounts a WHERE a.id = account_id AND a.user_id = auth.uid()));
+
 -- Indexes for performance
 CREATE INDEX IF NOT EXISTS idx_transactions_user_date ON public.transactions(user_id, date DESC);
 CREATE INDEX IF NOT EXISTS idx_transactions_user_type ON public.transactions(user_id, type);
 CREATE INDEX IF NOT EXISTS idx_transactions_user_category ON public.transactions(user_id, category);
+CREATE INDEX IF NOT EXISTS idx_transactions_user_account ON public.transactions(user_id, account_id);
+CREATE INDEX IF NOT EXISTS idx_transactions_account_date ON public.transactions(account_id, date DESC);
 CREATE INDEX IF NOT EXISTS idx_budgets_user_month ON public.budgets(user_id, month);
 CREATE INDEX IF NOT EXISTS idx_recurring_user_active ON public.recurring_transactions(user_id, is_active);
 CREATE INDEX IF NOT EXISTS idx_accounts_user ON public.accounts(user_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_user_bank_last4 ON public.accounts(user_id, bank_name, account_number_last4) WHERE bank_name IS NOT NULL AND account_number_last4 IS NOT NULL;
 
 -- Function to handle new user signup
 CREATE OR REPLACE FUNCTION public.handle_new_user()

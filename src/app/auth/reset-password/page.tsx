@@ -1,16 +1,16 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { createClient } from '@/lib/supabase/client';
+import { resetPassword } from '@/lib/api/auth';
 import { Loader2, Lock, Eye, EyeOff, ArrowLeft } from 'lucide-react';
-import { cn } from '@/utils/currency';
 import Link from 'next/link';
-import { Suspense } from 'react';
+
+/* eslint-disable react-hooks/set-state-in-effect */
 
 function ResetPasswordForm() {
   const [password, setPassword] = useState('');
@@ -18,37 +18,31 @@ function ResetPasswordForm() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [showPassword, setShowPassword] = useState(false);
-  const [validSession, setValidSession] = useState(false);
+  const [token, setToken] = useState<string | null>(null);
+  const [tokenValid, setTokenValid] = useState(false);
+  const [checkingToken, setCheckingToken] = useState(true);
 
   const router = useRouter();
   const searchParams = useSearchParams();
-  const supabase = createClient();
 
   useEffect(() => {
-    const verifySession = async () => {
-      const code = searchParams.get('code');
-      if (code) {
-        const { error } = await supabase.auth.exchangeCodeForSession(code);
-        if (!error) {
-          setValidSession(true);
-        } else {
-          setError('Invalid or expired reset link');
-        }
-      } else {
-        const { data: { session } } = await supabase.auth.getSession();
-        if (session) {
-          setValidSession(true);
-        } else {
-          setError('Invalid or expired reset link');
-        }
-      }
-    };
-    verifySession();
-  }, [searchParams, supabase]);
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    const tokenFromUrl = searchParams.get('token');
+    if (tokenFromUrl) {
+      setToken(tokenFromUrl);
+      setTokenValid(true);
+    }
+    setCheckingToken(false);
+  }, [searchParams]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
+
+    if (!token) {
+      setError('Missing reset token');
+      return;
+    }
 
     if (password !== confirmPassword) {
       setError('Passwords do not match');
@@ -63,9 +57,7 @@ function ResetPasswordForm() {
     setLoading(true);
 
     try {
-      const { error } = await supabase.auth.updateUser({ password });
-      if (error) throw error;
-
+      await resetPassword(token, password, confirmPassword);
       router.push('/auth/login?message=Password updated successfully');
       router.refresh();
     } catch (err: any) {
@@ -75,7 +67,15 @@ function ResetPasswordForm() {
     }
   };
 
-  if (!validSession) {
+  if (checkingToken) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-background px-4">
+        <div className="animate-pulse">Loading...</div>
+      </div>
+    );
+  }
+
+  if (!tokenValid) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-background px-4">
         <Card className="w-full max-w-md">
@@ -173,10 +173,14 @@ function ResetPasswordForm() {
   );
 }
 
+function ResetPasswordPageContent() {
+  return <ResetPasswordForm />;
+}
+
 export default function ResetPasswordPage() {
   return (
-    <Suspense fallback={<div className="min-h-screen flex items-center justify-center"><Loader2 className="h-8 w-8 animate-spin text-primary" /></div>}>
-      <ResetPasswordForm />
+    <Suspense fallback={<div className="min-h-screen flex items-center justify-center bg-background px-4"><Loader2 className="h-8 w-8 animate-spin text-primary" /></div>}>
+      <ResetPasswordPageContent />
     </Suspense>
   );
 }

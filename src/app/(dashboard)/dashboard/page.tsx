@@ -4,17 +4,23 @@ import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { Plus, TrendingUp, TrendingDown, Minus, Wallet, ArrowUpRight, ArrowDownRight, Loader2, ChevronLeft, ChevronRight } from 'lucide-react';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Plus, TrendingUp, TrendingDown, Wallet, ArrowUpRight, ArrowDownRight, Loader2, ChevronLeft, ChevronRight, Repeat } from 'lucide-react';
 import { formatCurrency, formatCurrencyCompact } from '@/utils/currency';
 import { cn } from '@/utils/currency';
 import { getMonthKey, formatMonthYear, getCurrentMonthStart, parseMonthKey } from '@/utils/date';
-import { createClient } from '@/lib/supabase/client';
+import { useAuth } from '@/lib/auth-context';
 import { Transaction, Category, Budget, Account } from '@/types';
 import { CalculationEngine } from '@/lib/calculation-engine';
 import { DashboardCharts } from '@/components/dashboard/dashboard-charts';
 import { RecentTransactions } from '@/components/dashboard/recent-transactions';
 import { CategoryBreakdown } from '@/components/dashboard/category-breakdown';
 import { MonthlyOverview } from '@/components/dashboard/monthly-overview';
+import { transactionsApi } from '@/lib/api/transactions';
+import { categoriesApi } from '@/lib/api/categories';
+import { budgetsApi } from '@/lib/api/budgets';
+import { accountsApi } from '@/lib/api/accounts';
+import { formatAccountLabel } from '@/utils/accounts';
 
 export default function DashboardPage() {
   const [transactions, setTransactions] = useState<Transaction[]>([]);
@@ -24,10 +30,18 @@ export default function DashboardPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [currentMonth, setCurrentMonth] = useState(getMonthKey(getCurrentMonthStart()));
+  const [selectedAccountId, setSelectedAccountId] = useState<string>('all');
 
   const router = useRouter();
-  const supabase = createClient();
-  const engine = new CalculationEngine({ transactions, categories, budgets, accounts });
+  const { user } = useAuth();
+
+  const filteredTransactions = selectedAccountId === 'all'
+    ? transactions
+    : transactions.filter(t => t.account_id === selectedAccountId);
+  const filteredAccounts = selectedAccountId === 'all'
+    ? accounts
+    : accounts.filter(a => a.id === selectedAccountId);
+  const engine = new CalculationEngine({ transactions: filteredTransactions, categories, budgets, accounts: filteredAccounts });
 
   const previousMonthKey = getMonthKey(new Date(parseMonthKey(currentMonth).getFullYear(), parseMonthKey(currentMonth).getMonth() - 1));
   const nextMonthKey = getMonthKey(new Date(parseMonthKey(currentMonth).getFullYear(), parseMonthKey(currentMonth).getMonth() + 1));
@@ -39,16 +53,11 @@ export default function DashboardPage() {
   useEffect(() => {
     fetchData();
     
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(() => {
-      fetchData();
-    });
-
     const handleTransactionsUpdated = () => {
       fetchData();
     };
     window.addEventListener('transactions-updated', handleTransactionsUpdated);
     return () => {
-      subscription.unsubscribe();
       window.removeEventListener('transactions-updated', handleTransactionsUpdated);
     };
   }, [currentMonth]);
@@ -56,20 +65,19 @@ export default function DashboardPage() {
   const fetchData = async () => {
     try {
       setLoading(true);
-      const { data: { user } } = await supabase.auth.getUser();
       if (!user) return;
 
       const [txRes, catRes, budRes, accRes] = await Promise.all([
-        supabase.from('transactions').select('*').eq('user_id', user.id).order('date', { ascending: false }),
-        supabase.from('categories').select('*').eq('user_id', user.id),
-        supabase.from('budgets').select('*').eq('user_id', user.id),
-        supabase.from('accounts').select('*').eq('user_id', user.id),
+        transactionsApi.list(),
+        categoriesApi.list(),
+        budgetsApi.list(),
+        accountsApi.list(),
       ]);
 
-      if (txRes.data) setTransactions(txRes.data);
-      if (catRes.data) setCategories(catRes.data);
-      if (budRes.data) setBudgets(budRes.data);
-      if (accRes.data) setAccounts(accRes.data);
+      setTransactions(txRes);
+      setCategories(catRes);
+      setBudgets(budRes);
+      setAccounts(accRes);
     } catch (err) {
       setError('Failed to load dashboard data');
     } finally {
@@ -97,7 +105,18 @@ export default function DashboardPage() {
             {formatMonthYear(parseMonthKey(currentMonth))} overview
           </p>
         </div>
-<div className="flex items-center gap-2">
+<div className="flex flex-wrap items-center gap-2">
+            <Select value={selectedAccountId} onValueChange={setSelectedAccountId}>
+              <SelectTrigger className="w-[220px]">
+                <SelectValue placeholder="All Accounts" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All Accounts</SelectItem>
+                {accounts.map(a => (
+                  <SelectItem key={a.id} value={a.id}>{formatAccountLabel(a)}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
             <Button variant="outline" size="sm" onClick={handlePreviousMonth} disabled={loading}>
               <ChevronLeft className="mr-1 h-4 w-4" />
               Previous
@@ -116,7 +135,7 @@ export default function DashboardPage() {
           </div>
       </div>
 
-      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-5">
         <MetricCard
           title="Total Balance"
           value={formatCurrency(metrics.current_balance)}
@@ -139,6 +158,14 @@ export default function DashboardPage() {
           iconClass="text-red-500"
           trend="down"
           trendValue={formatCurrency(metrics.monthly_expenses)}
+        />
+        <MetricCard
+          title="Transfers"
+          value={formatCurrency(metrics.total_transfers)}
+          icon={Repeat}
+          iconClass="text-purple-500"
+          trend="up"
+          trendValue={formatCurrency(metrics.monthly_transfers)}
         />
         <MetricCard
           title="Savings Rate"
@@ -167,7 +194,8 @@ export default function DashboardPage() {
           savingsData={engine.getChartDataForSavingsTrend(12)}
         />
         <RecentTransactions 
-          transactions={transactions.slice(0, 10)}
+          transactions={filteredTransactions.slice(0, 10)}
+          accounts={accounts}
           onViewAll={() => router.push('/transactions')}
         />
       </div>

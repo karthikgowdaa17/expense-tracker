@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -8,13 +8,19 @@ import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Label } from '@/components/ui/label';
-import { createClient } from '@/lib/supabase/client';
+import { useAuth } from '@/lib/auth-context';
 import { TransactionType, PaymentMethod, AccountType, Category } from '@/types';
-import { Plus, Loader2, ArrowLeft } from 'lucide-react';
+import { Plus, Loader2, ArrowLeft, Sparkles } from 'lucide-react';
 import { cn } from '@/utils/currency';
 import { useForm } from '@/components/ui/form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
+import { categoriesApi } from '@/lib/api/categories';
+import { transactionsApi } from '@/lib/api/transactions';
+import { accountsApi } from '@/lib/api/accounts';
+import { formatAccountLabel } from '@/utils/accounts';
+import type { Account } from '@/types';
+import { suggestCategory } from '@/utils/categorySuggestion';
 
 const transactionSchema = z.object({
   type: z.enum(['income', 'expense', 'transfer', 'refund']),
@@ -57,11 +63,12 @@ const TRANSACTION_TYPES: { value: TransactionType; label: string }[] = [
 
 export default function AddTransactionPage() {
   const [categories, setCategories] = useState<Category[]>([]);
+  const [accounts, setAccounts] = useState<Account[]>([]);
   const [loading, setLoading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
 
   const router = useRouter();
-  const supabase = createClient();
+  const { user } = useAuth();
 
   const form = useForm<TransactionFormData>({
     resolver: zodResolver(transactionSchema),
@@ -84,33 +91,74 @@ export default function AddTransactionPage() {
 
   const fetchCategories = async () => {
     try {
-      const { data: { user } } = await supabase.auth.getUser();
       if (!user) return;
 
-      const { data } = await supabase
-        .from('categories')
-        .select('*')
-        .eq('user_id', user.id);
-
-      if (data) setCategories(data);
+      const [data, accData] = await Promise.all([categoriesApi.list(), accountsApi.list()]);
+      setCategories(data);
+      setAccounts(accData);
+      // Preselect the first real account once known
+      const current = form.getValues('account');
+      if ((!current || current === 'bank_account') && accData.length > 0) {
+        const preferred = accData.find(a => a.name === 'Bank Account') || accData[0];
+        form.setValue('account', preferred.id);
+      }
     } catch (err) {
       console.error('Failed to load categories:', err);
     }
   };
 
   const filteredCategories = categories.filter(c => c.type === form.watch('type'));
+  const [suggestedCategory, setSuggestedCategory] = useState<Category | null>(null);
+  const [showSuggestion, setShowSuggestion] = useState(false);
+
+  const updateSuggestion = useCallback(() => {
+    const description = form.watch('description');
+    const type = form.watch('type') as TransactionType;
+    const userSelectedCategory = form.watch('category');
+    
+    if (!description || userSelectedCategory) {
+      setSuggestedCategory(null);
+      setShowSuggestion(false);
+      return;
+    }
+    
+    const suggested = suggestCategory(description, categories, type);
+    setSuggestedCategory(suggested);
+    setShowSuggestion(!!suggested);
+  }, [categories]);
+
+  useEffect(() => {
+    const subscription = form.watch((value, { name }) => {
+      if (name === 'description' || name === 'type') {
+        updateSuggestion();
+      }
+    });
+    return () => subscription.unsubscribe();
+  }, [updateSuggestion]);
+
+  useEffect(() => {
+    updateSuggestion();
+  }, [categories, updateSuggestion]);
+
+  const applySuggestion = () => {
+    if (suggestedCategory) {
+      form.setValue('category', suggestedCategory.name);
+      setSuggestedCategory(null);
+      setShowSuggestion(false);
+    }
+  };
 
   const onSubmit = async (data: TransactionFormData) => {
     try {
       setSubmitting(true);
-      const { data: { user } } = await supabase.auth.getUser();
       if (!user) return;
 
-      const { error } = await supabase
-        .from('transactions')
-        .insert({ ...data, user_id: user.id, amount: Math.round(data.amount * 100) / 100 });
-
-      if (error) throw error;
+      const selectedAccount = accounts.find(a => a.id === data.account);
+      await transactionsApi.create({
+        ...data,
+        account: selectedAccount ? formatAccountLabel(selectedAccount) : data.account,
+        account_id: selectedAccount ? selectedAccount.id : null,
+      });
 
       router.push('/transactions');
       router.refresh();
@@ -200,6 +248,15 @@ export default function AddTransactionPage() {
                 {form.formState.errors.category && (
                   <p className="text-sm text-destructive">{form.formState.errors.category.message}</p>
                 )}
+                {showSuggestion && suggestedCategory && (
+                  <div className="flex items-center gap-2 mt-2 p-2 bg-primary/10 rounded-lg text-sm">
+                    <Sparkles className="h-4 w-4 text-primary" />
+                    <span className="text-primary font-medium">Suggested: {suggestedCategory.name}</span>
+                    <Button type="button" variant="link" size="sm" onClick={applySuggestion} className="p-0 h-auto">
+                      Apply
+                    </Button>
+                  </div>
+                )}
               </div>
             </div>
 
@@ -241,12 +298,15 @@ export default function AddTransactionPage() {
 
               <div className="space-y-2">
                 <Label>Account</Label>
-                <Select onValueChange={(value) => form.setValue('account', value)} defaultValue={form.getValues('account')}>
+                <Select onValueChange={(value) => form.setValue('account', value)} value={form.watch('account') || undefined}>
                   <SelectTrigger>
                     <SelectValue placeholder="Select account" />
                   </SelectTrigger>
                   <SelectContent>
-                    {ACCOUNT_TYPES.map(a => (
+                    {accounts.map(a => (
+                      <SelectItem key={a.id} value={a.id}>{formatAccountLabel(a)}</SelectItem>
+                    ))}
+                    {accounts.length === 0 && ACCOUNT_TYPES.map(a => (
                       <SelectItem key={a.value} value={a.value}>{a.label}</SelectItem>
                     ))}
                   </SelectContent>

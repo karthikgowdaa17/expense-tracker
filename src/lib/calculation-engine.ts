@@ -132,24 +132,43 @@ export class CalculationEngine {
 
   calculateAccountBalances(): Record<string, number> {
     const balances: Record<string, number> = {};
-    
+
     this.accounts.forEach(acc => {
       balances[acc.id] = acc.opening_balance;
     });
-    
+
     this.transactions.forEach(t => {
-      if (!balances[t.account]) balances[t.account] = 0;
-      
+      // Prefer the account FK; unlinked legacy rows keep their old bucket
+      const key = t.account_id || t.account;
+      if (!(key in balances)) balances[key] = 0;
+
       if (t.type === 'income' || t.type === 'refund') {
-        balances[t.account] += t.amount;
+        balances[key] += t.amount;
       } else if (t.type === 'expense') {
-        balances[t.account] -= t.amount;
+        balances[key] -= t.amount;
       } else if (t.type === 'transfer') {
-        balances[t.account] -= t.amount;
+        // 'in' = money arrived in this account, 'out' (default) = money left it
+        balances[key] += (t.transfer_direction === 'in' ? t.amount : -t.amount);
       }
     });
-    
+
     return balances;
+  }
+
+  /**
+   * Net transfer amount for a period, by direction. Internal transfers between
+   * the user's own accounts net out to zero in the All Accounts view, so they
+   * are never counted as income or expense.
+   */
+  calculateNetTransfers(start?: Date, end?: Date): { inflow: number; outflow: number; net: number } {
+    const transfers = this.getTransactionsByType('transfer', start, end);
+    let inflow = 0;
+    let outflow = 0;
+    transfers.forEach(t => {
+      if (t.transfer_direction === 'in') inflow += t.amount;
+      else outflow += t.amount;
+    });
+    return { inflow, outflow, net: inflow - outflow };
   }
 
   calculateNetWorth(): number {
@@ -418,9 +437,15 @@ export class CalculationEngine {
     const accountBalances = this.calculateAccountBalances();
     const netWorth = this.calculateNetWorth();
     
+    const totalTransfers = this.calculateTotalTransfers();
+    const monthlyTransfers = this.getTransactionsByType('transfer', start, end)
+      .reduce((sum, t) => sum + t.amount, 0);
+
     return {
       total_income: this.calculateTotalIncome(),
       total_expenses: this.calculateTotalExpenses(),
+      total_transfers: totalTransfers,
+      monthly_transfers: monthlyTransfers,
       total_savings: this.calculateSavings(
         this.calculateTotalIncome(),
         this.calculateTotalExpenses()

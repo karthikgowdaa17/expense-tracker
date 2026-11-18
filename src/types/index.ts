@@ -34,7 +34,13 @@ export interface Transaction {
   subcategory?: string;
   description: string;
   payment_method: PaymentMethod;
+  /** Legacy free-text account label (kept for backward compatibility). */
   account: string;
+  /** FK to the user's account record (null for legacy/unassigned rows). */
+  account_id?: string | null;
+  /** For type='transfer': did money enter ('in') or leave ('out') this account. */
+  transfer_direction?: 'in' | 'out' | null;
+  fingerprint?: string;
   notes?: string;
   is_recurring?: boolean;
   recurring_id?: string;
@@ -89,8 +95,13 @@ export interface RecurringTransaction {
 export interface Account {
   id: string;
   user_id: string;
+  /** Display name of the account (previously "account_name"). */
   name: string;
   type: AccountType;
+  /** Bank / institution name when known (e.g. "HDFC Bank"). */
+  bank_name?: string | null;
+  /** Only the last 4 digits of the account number are ever stored. */
+  account_number_last4?: string | null;
   opening_balance: number;
   current_balance?: number;
   currency: string;
@@ -149,6 +160,8 @@ export interface YearlySummary {
 export interface FinancialMetrics {
   total_income: number;
   total_expenses: number;
+  total_transfers: number;
+  monthly_transfers: number;
   total_savings: number;
   savings_rate: number;
   current_balance: number;

@@ -9,7 +9,7 @@ import { Label } from '@/components/ui/label';
 import { Progress } from '@/components/ui/progress';
 import { Dialog, DialogTrigger, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog';
 import { formatCurrency, calculatePercentage } from '@/utils/currency';
-import { createClient } from '@/lib/supabase/client';
+import { useAuth } from '@/lib/auth-context';
 import { Budget, Category } from '@/types';
 import { Plus, Loader2, Edit, Trash2, AlertTriangle, CheckCircle } from 'lucide-react';
 import { cn } from '@/utils/currency';
@@ -18,6 +18,9 @@ import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
 import { AlertDialog, AlertDialogTrigger, AlertDialogContent, AlertDialogHeader, AlertDialogTitle, AlertDialogDescription, AlertDialogAction, AlertDialogCancel } from '@/components/ui/alert-dialog';
 import { getMonthKey, formatMonthYear, parseMonthKey, getCurrentMonthStart, getMonthRange } from '@/utils/date';
+import { budgetsApi } from '@/lib/api/budgets';
+import { categoriesApi } from '@/lib/api/categories';
+import { transactionsApi } from '@/lib/api/transactions';
 
 const budgetSchema = z.object({
   category: z.string().min(1, 'Category is required'),
@@ -37,7 +40,7 @@ export default function BudgetsPage() {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingBudget, setEditingBudget] = useState<Budget | null>(null);
 
-  const supabase = createClient();
+  const { user } = useAuth();
 
   const form = useForm<BudgetFormData>({
     resolver: zodResolver(budgetSchema),
@@ -56,30 +59,27 @@ export default function BudgetsPage() {
   const fetchData = async () => {
     try {
       setLoading(true);
-      const { data: { user } } = await supabase.auth.getUser();
       if (!user) return;
 
       const { start, end } = getMonthRange(parseMonthKey(currentMonth));
 
       const [budRes, catRes, txRes] = await Promise.all([
-        supabase.from('budgets').select('*').eq('user_id', user.id).eq('month', currentMonth),
-        supabase.from('categories').select('*').eq('user_id', user.id).eq('type', 'expense'),
-        supabase
-          .from('transactions')
-          .select('category, amount')
-          .eq('user_id', user.id)
-          .eq('type', 'expense')
-          .gte('date', start.toISOString().split('T')[0])
-          .lte('date', end.toISOString().split('T')[0]),
+        budgetsApi.list(currentMonth),
+        categoriesApi.list(),
+        transactionsApi.list({
+          dateFrom: start.toISOString().split('T')[0],
+          dateTo: end.toISOString().split('T')[0],
+          type: 'expense',
+        }),
       ]);
 
-      if (budRes.data) setBudgets(budRes.data);
-      if (catRes.data) setCategories(catRes.data);
+      setBudgets(budRes);
+      setCategories(catRes.filter(c => c.type === 'expense'));
 
       // compute spending per category name
       const spendMap: Record<string, number> = {};
-      if (txRes.data) {
-        txRes.data.forEach((t) => {
+      if (txRes) {
+        txRes.forEach((t) => {
           spendMap[t.category] = (spendMap[t.category] || 0) + t.amount;
         });
       }
@@ -92,20 +92,17 @@ export default function BudgetsPage() {
   };
 
   const fetchSpendingForCategory = async (category: string): Promise<number> => {
-    const { data: { user } } = await supabase.auth.getUser();
     if (!user) return 0;
 
     const { start, end } = getMonthRange(parseMonthKey(currentMonth));
-    const { data } = await supabase
-      .from('transactions')
-      .select('amount')
-      .eq('user_id', user.id)
-      .eq('type', 'expense')
-      .eq('category', category)
-      .gte('date', start.toISOString().split('T')[0])
-      .lte('date', end.toISOString().split('T')[0]);
+    const txRes = await transactionsApi.list({
+      dateFrom: start.toISOString().split('T')[0],
+      dateTo: end.toISOString().split('T')[0],
+      type: 'expense',
+      category,
+    });
 
-    return data?.reduce((sum, t) => sum + t.amount, 0) || 0;
+    return txRes?.reduce((sum, t) => sum + t.amount, 0) || 0;
   };
 
   const handleOpenDialog = (budget?: Budget) => {
@@ -131,20 +128,15 @@ export default function BudgetsPage() {
 
   const onSubmit = async (data: BudgetFormData) => {
     try {
-      const { data: { user } } = await supabase.auth.getUser();
       if (!user) return;
 
+      const { category, ...rest } = data;
+      const payload = { ...rest, category_id: category };
+
       if (editingBudget) {
-        const { error } = await supabase
-          .from('budgets')
-          .update({ amount: data.amount, notes: data.notes })
-          .eq('id', editingBudget.id);
-        if (error) throw error;
+        await budgetsApi.update(editingBudget.id, { amount: data.amount, notes: data.notes });
       } else {
-        const { error } = await supabase
-          .from('budgets')
-          .insert({ ...data, user_id: user.id });
-        if (error) throw error;
+        await budgetsApi.create(payload);
       }
 
       setDialogOpen(false);
@@ -156,8 +148,7 @@ export default function BudgetsPage() {
 
   const handleDelete = async (budget: Budget) => {
     try {
-      const { error } = await supabase.from('budgets').delete().eq('id', budget.id);
-      if (error) throw error;
+      await budgetsApi.delete(budget.id);
       fetchData();
     } catch (err) {
       console.error('Failed to delete budget:', err);

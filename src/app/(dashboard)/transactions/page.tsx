@@ -9,21 +9,26 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { formatCurrency } from '@/utils/currency';
 import { formatDisplayDate } from '@/utils/date';
-import { createClient } from '@/lib/supabase/client';
-import { Transaction, TransactionType, PaymentMethod, AccountType } from '@/types';
+import { useAuth } from '@/lib/auth-context';
+import { Transaction, TransactionType, PaymentMethod, Account } from '@/types';
 import { Plus, Search, Filter, ChevronDown, Edit, Trash2, Copy, Loader2, MoreHorizontal } from 'lucide-react';
 import { toast } from 'sonner';
 import { cn } from '@/utils/currency';
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from '@/components/ui/dropdown-menu';
 import { AlertDialog, AlertDialogTrigger, AlertDialogContent, AlertDialogHeader, AlertDialogTitle, AlertDialogDescription, AlertDialogAction, AlertDialogCancel } from '@/components/ui/alert-dialog';
 import { format } from 'date-fns';
+import { transactionsApi } from '@/lib/api/transactions';
+import { categoriesApi } from '@/lib/api/categories';
+import { accountsApi } from '@/lib/api/accounts';
+import { accountLabelForTx, buildAccountMap, formatAccountLabel } from '@/utils/accounts';
 
 interface TransactionFilters {
   search: string;
   type: TransactionType | 'all';
   category: string;
   paymentMethod: string;
-  account: string;
+  /** 'all' | 'unassigned' | account id */
+  accountId: string;
   dateFrom: string;
   dateTo: string;
   sortBy: 'date' | 'amount';
@@ -32,15 +37,16 @@ interface TransactionFilters {
 
 export default function TransactionsPage() {
   const [transactions, setTransactions] = useState<Transaction[]>([]);
-  const [filteredTransactions, setFilteredTransactions] = useState<Transaction[]>([]);
   const [categories, setCategories] = useState<string[]>([]);
+  const [accounts, setAccounts] = useState<Account[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [filters, setFilters] = useState<TransactionFilters>({
     search: '',
     type: 'all',
     category: 'all',
     paymentMethod: 'all',
-    account: 'all',
+    accountId: 'all',
     dateFrom: '',
     dateTo: '',
     sortBy: 'date',
@@ -52,89 +58,58 @@ export default function TransactionsPage() {
   const [transactionToDelete, setTransactionToDelete] = useState<Transaction | null>(null);
 
   const router = useRouter();
-  const supabase = createClient();
+  const { user } = useAuth();
 
   const fetchData = useCallback(async () => {
     try {
       setLoading(true);
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) return;
+      setError(null);
+      if (!user) {
+        setLoading(false);
+        return;
+      }
 
-      const { data: txData } = await supabase
-        .from('transactions')
-        .select('*')
-        .eq('user_id', user.id)
-        .order('date', { ascending: false });
+      // Filter on the server (indexed columns), not in the browser
+      const [txData, catData, accData] = await Promise.all([
+        transactionsApi.list({
+          search: filters.search || undefined,
+          type: filters.type !== 'all' ? filters.type : undefined,
+          category: filters.category !== 'all' ? filters.category : undefined,
+          paymentMethod: filters.paymentMethod !== 'all' ? filters.paymentMethod : undefined,
+          accountId: filters.accountId !== 'all' ? filters.accountId : undefined,
+          dateFrom: filters.dateFrom || undefined,
+          dateTo: filters.dateTo || undefined,
+        }),
+        categoriesApi.list(),
+        accountsApi.list(),
+      ]);
 
-      const { data: catData } = await supabase
-        .from('categories')
-        .select('name')
-        .eq('user_id', user.id);
-
-      if (txData) setTransactions(txData);
-      if (catData) setCategories(catData.map(c => c.name));
+      setTransactions(txData);
+      setCategories(catData.map(c => c.name));
+      setAccounts(accData);
     } catch (err) {
       console.error('Failed to load transactions:', err);
+      setError(err instanceof Error ? err.message : 'Failed to load transactions');
     } finally {
       setLoading(false);
     }
-  }, [supabase]);
+  }, [user, filters.search, filters.type, filters.category, filters.paymentMethod, filters.accountId, filters.dateFrom, filters.dateTo]);
+
+  // Server applies the filters; only sorting happens client-side
+  const filteredTransactions = [...transactions].sort((a, b) => {
+    const aVal = a[filters.sortBy];
+    const bVal = b[filters.sortBy];
+    if (filters.sortOrder === 'asc') {
+      return aVal > bVal ? 1 : -1;
+    }
+    return aVal < bVal ? 1 : -1;
+  });
+
+  const accountMap = buildAccountMap(accounts);
 
   useEffect(() => {
     fetchData();
   }, [fetchData]);
-
-  const applyFilters = useCallback(() => {
-    let result = [...transactions];
-
-    if (filters.search) {
-      const search = filters.search.toLowerCase();
-      result = result.filter(tx => 
-        tx.description.toLowerCase().includes(search) ||
-        tx.category.toLowerCase().includes(search) ||
-        tx.notes?.toLowerCase().includes(search)
-      );
-    }
-
-    if (filters.type !== 'all') {
-      result = result.filter(tx => tx.type === filters.type);
-    }
-
-    if (filters.category !== 'all') {
-      result = result.filter(tx => tx.category === filters.category);
-    }
-
-    if (filters.paymentMethod !== 'all') {
-      result = result.filter(tx => tx.payment_method === filters.paymentMethod);
-    }
-
-    if (filters.account !== 'all') {
-      result = result.filter(tx => tx.account === filters.account);
-    }
-
-    if (filters.dateFrom) {
-      result = result.filter(tx => tx.date >= filters.dateFrom);
-    }
-
-    if (filters.dateTo) {
-      result = result.filter(tx => tx.date <= filters.dateTo);
-    }
-
-    result.sort((a, b) => {
-      const aVal = a[filters.sortBy];
-      const bVal = b[filters.sortBy];
-      if (filters.sortOrder === 'asc') {
-        return aVal > bVal ? 1 : -1;
-      }
-      return aVal < bVal ? 1 : -1;
-    });
-
-    setFilteredTransactions(result);
-  }, [transactions, filters]);
-
-  useEffect(() => {
-    applyFilters();
-  }, [applyFilters]);
 
   const handleEdit = (tx: Transaction) => {
     setEditingId(tx.id);
@@ -143,16 +118,9 @@ export default function TransactionsPage() {
 
   const handleSaveEdit = async (tx: Transaction) => {
     try {
-      const { data: { user } } = await supabase.auth.getUser();
       if (!user) return;
 
-      const { error } = await supabase
-        .from('transactions')
-        .update(editForm)
-        .eq('id', tx.id)
-        .eq('user_id', user.id);
-
-      if (error) throw error;
+      await transactionsApi.update(tx.id, editForm);
       
       setTransactions(prev => prev.map(t => t.id === tx.id ? { ...t, ...editForm } : t));
       setEditingId(null);
@@ -164,28 +132,12 @@ export default function TransactionsPage() {
 
   const handleDelete = async (tx: Transaction) => {
     try {
-      const { data: { user } } = await supabase.auth.getUser();
       if (!user) {
         toast.error('Not authenticated');
         return;
       }
 
-      const { error, data } = await supabase
-        .from('transactions')
-        .delete()
-        .eq('id', tx.id)
-        .eq('user_id', user.id)
-        .select();
-
-      if (error) {
-        toast.error(`Delete failed: ${error.message}`);
-        return;
-      }
-
-      if (!data || data.length === 0) {
-        toast.error('Delete succeeded but no row was removed (possible RLS or ID mismatch)');
-        return;
-      }
+      await transactionsApi.delete(tx.id);
 
       // Refetch to keep UI in sync with DB
       await fetchData();
@@ -200,25 +152,16 @@ export default function TransactionsPage() {
 
   const handleDuplicate = async (tx: Transaction) => {
     try {
-      const { data: { user } } = await supabase.auth.getUser();
       if (!user) return;
 
-      const newTx = { 
-        ...tx, 
-        id: crypto.randomUUID(), 
-        created_at: new Date().toISOString(), 
-        updated_at: new Date().toISOString(),
+      const withCopyName = {
+        ...tx,
         description: tx.description + ' (copy)',
       };
-      delete (newTx as any).id;
+      // Remove fields the backend generates
+      const { id: _id, user_id: _userId, created_at: _createdAt, updated_at: _updatedAt, fingerprint: _fp, ...newTx } = withCopyName;
 
-      const { data, error } = await supabase
-        .from('transactions')
-        .insert({ ...newTx, user_id: user.id })
-        .select()
-        .single();
-
-      if (error) throw error;
+      const data = await transactionsApi.create(newTx);
       
       setTransactions(prev => [data, ...prev]);
     } catch (err) {
@@ -250,13 +193,26 @@ export default function TransactionsPage() {
   };
 
   const paymentMethods: PaymentMethod[] = ['cash', 'upi', 'credit_card', 'debit_card', 'bank_transfer', 'other'];
-  const accountTypes: AccountType[] = ['cash', 'bank_account', 'credit_card', 'savings', 'investment', 'other'];
   const types: (TransactionType | 'all')[] = ['all', 'income', 'expense', 'transfer', 'refund'];
 
   if (loading) {
     return (
       <div className="flex items-center justify-center h-64">
         <Loader2 className="h-8 w-8 animate-spin text-primary" />
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="flex flex-col items-center justify-center h-64 gap-4">
+        <div className="p-4 text-center text-destructive bg-destructive/10 rounded-lg">
+          <p className="font-medium">Failed to load transactions</p>
+          <p className="text-sm text-muted-foreground">{error}</p>
+        </div>
+        <Button variant="outline" onClick={fetchData}>
+          Retry
+        </Button>
       </div>
     );
   }
@@ -315,11 +271,12 @@ export default function TransactionsPage() {
                   {paymentMethods.map(m => <SelectItem key={m} value={m}>{m.replace('_', ' ')}</SelectItem>)}
                 </SelectContent>
               </Select>
-              <Select value={filters.account} onValueChange={(v) => setFilters(prev => ({ ...prev, account: v }))}>
+              <Select value={filters.accountId} onValueChange={(v) => setFilters(prev => ({ ...prev, accountId: v }))}>
                 <SelectTrigger><SelectValue placeholder="All Accounts" /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="all">All Accounts</SelectItem>
-                  {accountTypes.map(a => <SelectItem key={a} value={a}>{a.replace('_', ' ')}</SelectItem>)}
+                  {accounts.map(a => <SelectItem key={a.id} value={a.id}>{formatAccountLabel(a)}</SelectItem>)}
+                  <SelectItem value="unassigned">Unassigned</SelectItem>
                 </SelectContent>
               </Select>
               <div className="flex gap-2">
@@ -408,14 +365,26 @@ export default function TransactionsPage() {
                       </TableCell>
                       <TableCell>
                         {editingId === tx.id ? (
-                          <Select value={editForm.account || tx.account} onValueChange={(v) => setEditForm(prev => ({ ...prev, account: v }))}>
+                          <Select
+                            value={editForm.account_id ?? tx.account_id ?? 'unassigned'}
+                            onValueChange={(v) => {
+                              const accountId = v === 'unassigned' ? null : v;
+                              const acc = accounts.find(a => a.id === accountId);
+                              setEditForm(prev => ({
+                                ...prev,
+                                account_id: accountId,
+                                account: acc ? formatAccountLabel(acc) : prev.account,
+                              }));
+                            }}
+                          >
                             <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
                             <SelectContent>
-                              {accountTypes.map(a => <SelectItem key={a} value={a}>{a.replace('_', ' ')}</SelectItem>)}
+                              <SelectItem value="unassigned">Unassigned</SelectItem>
+                              {accounts.map(a => <SelectItem key={a.id} value={a.id}>{formatAccountLabel(a)}</SelectItem>)}
                             </SelectContent>
                           </Select>
                         ) : (
-                          tx.account.replace('_', ' ')
+                          accountLabelForTx(tx, accountMap)
                         )}
                       </TableCell>
                       <TableCell className="text-right font-mono font-semibold">

@@ -10,9 +10,15 @@ import { Switch } from '@/components/ui/switch';
 import { Dialog, DialogTrigger, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { formatCurrency } from '@/utils/currency';
-import { createClient } from '@/lib/supabase/client';
 import { generateTransactionFingerprint, deduplicateTransactions } from '@/utils/fingerprint';
+import { suggestCategory } from '@/utils/categorySuggestion';
 import { Category, Account, PaymentMethod, AccountType, UserSettings, Profile } from '@/types';
+import { normalizePhonePeRow, parseCSV, extractMerchantKey } from '@/lib/import/phonepe';
+import {
+  detectedLabel, resolveRefLabel, rowFingerprint, refExistingId, refForJsonRow,
+  type DetectedAccount, type AccountRef,
+} from '@/lib/import/preview';
+import { formatAccountLabel, buildAccountMap } from '@/utils/accounts';
 import { Plus, Loader2, Edit, Trash2, Download, Upload, Trash, AlertTriangle, Save, X, CheckCircle2, FileText, AlertCircle } from 'lucide-react';
 import { cn } from '@/utils/currency';
 import { useForm } from '@/components/ui/form';
@@ -21,6 +27,14 @@ import { z } from 'zod';
 import { AlertDialog, AlertDialogTrigger, AlertDialogContent, AlertDialogHeader, AlertDialogTitle, AlertDialogDescription, AlertDialogAction, AlertDialogCancel } from '@/components/ui/alert-dialog';
 import { useTheme } from 'next-themes';
 import { useRouter } from 'next/navigation';
+import { useAuth } from '@/lib/auth-context';
+import { categoriesApi } from '@/lib/api/categories';
+import { accountsApi } from '@/lib/api/accounts';
+import { settingsApi } from '@/lib/api/settings';
+import { profilesApi } from '@/lib/api/profiles';
+import { transactionsApi } from '@/lib/api/transactions';
+import { budgetsApi } from '@/lib/api/budgets';
+import { recurringApi } from '@/lib/api/recurring';
 
 const categorySchema = z.object({
   name: z.string().min(1, 'Name is required'),
@@ -32,6 +46,8 @@ const categorySchema = z.object({
 const accountSchema = z.object({
   name: z.string().min(1, 'Name is required'),
   type: z.enum(['cash', 'bank_account', 'credit_card', 'savings', 'investment', 'other']),
+  bank_name: z.string().optional(),
+  account_number_last4: z.string().regex(/^\d{4}$/, 'Exactly 4 digits').optional().or(z.literal('')),
   opening_balance: z.number(),
   currency: z.string(),
 });
@@ -98,6 +114,15 @@ export default function SettingsPage() {
   const [phonepeError, setPhonepeError] = useState('');
   const [phonepeMessage, setPhonepeMessage] = useState('');
   const [learnedMap, setLearnedMap] = useState<Record<string, string>>({}); // merchant_key -> category name
+  const [phonepeDetectedAccounts, setPhonepeDetectedAccounts] = useState<DetectedAccount[]>([]);
+  const [phonepeExistingFps, setPhonepeExistingFps] = useState<Set<string>>(new Set());
+
+  // Account delete dialog state
+  const [deleteAccount, setDeleteAccount] = useState<Account | null>(null);
+  const [deleteMode, setDeleteMode] = useState<'unassign' | 'reassign' | 'delete'>('unassign');
+  const [deleteReassignTo, setDeleteReassignTo] = useState<string>('');
+  const [accountTxCounts, setAccountTxCounts] = useState<Record<string, number>>({});
+  const [accountBalances, setAccountBalances] = useState<Record<string, number>>({});
 
   // Generic JSON Import state
   const [importFile, setImportFile] = useState<File | null>(null);
@@ -108,7 +133,7 @@ export default function SettingsPage() {
   const [importError, setImportError] = useState('');
   const [importMessage, setImportMessage] = useState('');
 
-  const supabase = createClient();
+  const { user, loading: authLoading } = useAuth();
   const { theme, setTheme } = useTheme();
   const router = useRouter();
 
@@ -119,7 +144,7 @@ export default function SettingsPage() {
 
   const accountForm = useForm<AccountFormData>({
     resolver: zodResolver(accountSchema),
-    defaultValues: { name: '', type: 'bank_account', opening_balance: 0, currency: 'INR' },
+    defaultValues: { name: '', type: 'bank_account', bank_name: '', account_number_last4: '', opening_balance: 0, currency: 'INR' },
   });
 
   const profileSchema = z.object({
@@ -145,37 +170,49 @@ export default function SettingsPage() {
   const fetchData = useCallback(async () => {
     try {
       setLoading(true);
-      const { data: { user } } = await supabase.auth.getUser();
       if (!user) return;
       setUserEmail(user.email || '');
 
-      const [catRes, accRes, setRes, profRes] = await Promise.all([
-        supabase.from('categories').select('*').eq('user_id', user.id).order('type').order('name'),
-        supabase.from('accounts').select('*').eq('user_id', user.id).order('created_at'),
-        supabase.from('user_settings').select('*').eq('user_id', user.id).single(),
-        supabase.from('profiles').select('*').eq('id', user.id).single(),
+      const [catRes, accRes, setRes, profRes, txRes] = await Promise.all([
+        categoriesApi.list(),
+        accountsApi.list(),
+        settingsApi.get(),
+        profilesApi.get(),
+        transactionsApi.list(),
       ]);
 
-      if (catRes.data) setCategories(catRes.data);
-      if (accRes.data) setAccounts(accRes.data);
-      if (setRes.data) setSettings(setRes.data);
-      if (profRes.data) setProfile(profRes.data);
+      setCategories(catRes);
+      setAccounts(accRes);
+      setSettings(setRes);
+      setProfile(profRes);
+
+      // Per-account stats (count + current balance incl. transfer direction)
+      const counts: Record<string, number> = {};
+      const balances: Record<string, number> = {};
+      for (const acc of accRes) balances[acc.id] = acc.opening_balance;
+      for (const t of txRes) {
+        if (!t.account_id) continue;
+        counts[t.account_id] = (counts[t.account_id] || 0) + 1;
+        if (t.account_id in balances) {
+          if (t.type === 'income' || t.type === 'refund') balances[t.account_id] += t.amount;
+          else if (t.type === 'expense') balances[t.account_id] -= t.amount;
+          else if (t.type === 'transfer') balances[t.account_id] += (t.transfer_direction === 'in' ? t.amount : -t.amount);
+        }
+      }
+      setAccountTxCounts(counts);
+      setAccountBalances(balances);
     } catch (err) {
       console.error('Failed to load settings:', err);
     } finally {
       setLoading(false);
     }
-  }, [supabase]);
+  }, [user]);
 
   const updateUserSettings = async (updates: Partial<{ currency: string; financial_year_start_month: number }>) => {
     try {
-      const { data: { user } } = await supabase.auth.getUser();
       if (!user) return;
-      const { error } = await supabase.from('user_settings').update(updates).eq('user_id', user.id);
-      if (error) throw error;
-      // refresh settings
-      const { data } = await supabase.from('user_settings').select('*').eq('user_id', user.id).single();
-      if (data) setSettings(data);
+      const updated = await settingsApi.upsert(updates);
+      setSettings(updated);
     } catch (err) {
       console.error('Failed to update settings:', err);
     }
@@ -212,15 +249,12 @@ export default function SettingsPage() {
 
   const handleCategorySubmit = async (data: CategoryFormData) => {
     try {
-      const { data: { user } } = await supabase.auth.getUser();
       if (!user) return;
 
       if (editingCategory) {
-        const { error } = await supabase.from('categories').update(data).eq('id', editingCategory.id);
-        if (error) throw error;
+        await categoriesApi.update(editingCategory.id, data);
       } else {
-        const { error } = await supabase.from('categories').insert({ ...data, user_id: user.id, is_default: false });
-        if (error) throw error;
+        await categoriesApi.create(data);
       }
       setCategoryDialogOpen(false);
       fetchData();
@@ -231,15 +265,18 @@ export default function SettingsPage() {
 
   const handleAccountSubmit = async (data: AccountFormData) => {
     try {
-      const { data: { user } } = await supabase.auth.getUser();
       if (!user) return;
 
+      const payload = {
+        ...data,
+        bank_name: data.bank_name?.trim() || null,
+        account_number_last4: data.account_number_last4?.trim() || null,
+      };
+
       if (editingAccount) {
-        const { error } = await supabase.from('accounts').update(data).eq('id', editingAccount.id);
-        if (error) throw error;
+        await accountsApi.update(editingAccount.id, payload);
       } else {
-        const { error } = await supabase.from('accounts').insert({ ...data, user_id: user.id, is_active: true });
-        if (error) throw error;
+        await accountsApi.create({ ...payload, is_active: true });
       }
       setAccountDialogOpen(false);
       fetchData();
@@ -250,11 +287,9 @@ export default function SettingsPage() {
 
   const handleProfileSubmit = async (data: ProfileFormData) => {
     try {
-      const { data: { user } } = await supabase.auth.getUser();
       if (!user) return;
 
-      const { error } = await supabase.from('profiles').update(data).eq('id', user.id);
-      if (error) throw error;
+      await profilesApi.update(data);
 
       setProfileMessage({ type: 'success', text: 'Profile updated successfully' });
       fetchData();
@@ -266,18 +301,29 @@ export default function SettingsPage() {
 
   const handleDeleteCategory = async (cat: Category) => {
     try {
-      const { error } = await supabase.from('categories').delete().eq('id', cat.id);
-      if (error) throw error;
+      await categoriesApi.delete(cat.id);
       fetchData();
     } catch (err) {
       console.error('Failed to delete category:', err);
     }
   };
 
-  const handleDeleteAccount = async (acc: any) => {
+  const openDeleteAccount = (acc: Account) => {
+    setDeleteAccount(acc);
+    setDeleteMode('unassign');
+    const others = accounts.filter(a => a.id !== acc.id);
+    setDeleteReassignTo(others[0]?.id ?? '');
+  };
+
+  const handleDeleteAccount = async () => {
+    if (!deleteAccount) return;
     try {
-      const { error } = await supabase.from('accounts').delete().eq('id', acc.id);
-      if (error) throw error;
+      await accountsApi.remove(
+        deleteAccount.id,
+        deleteMode,
+        deleteMode === 'reassign' ? deleteReassignTo : undefined,
+      );
+      setDeleteAccount(null);
       fetchData();
     } catch (err) {
       console.error('Failed to delete account:', err);
@@ -286,23 +332,22 @@ export default function SettingsPage() {
 
   const handleExportData = async () => {
     try {
-      const { data: { user } } = await supabase.auth.getUser();
       if (!user) return;
 
       const [txRes, catRes, budRes, accRes, recRes] = await Promise.all([
-        supabase.from('transactions').select('*').eq('user_id', user.id),
-        supabase.from('categories').select('*').eq('user_id', user.id),
-        supabase.from('budgets').select('*').eq('user_id', user.id),
-        supabase.from('accounts').select('*').eq('user_id', user.id),
-        supabase.from('recurring_transactions').select('*').eq('user_id', user.id),
+        transactionsApi.list(),
+        categoriesApi.list(),
+        budgetsApi.list(),
+        accountsApi.list(),
+        recurringApi.list(),
       ]);
 
       const exportData = {
-        transactions: txRes.data || [],
-        categories: catRes.data || [],
-        budgets: budRes.data || [],
-        accounts: accRes.data || [],
-        recurring_transactions: recRes.data || [],
+        transactions: txRes,
+        categories: catRes,
+        budgets: budRes,
+        accounts: accRes,
+        recurring_transactions: recRes,
         exported_at: new Date().toISOString(),
       };
 
@@ -313,7 +358,7 @@ export default function SettingsPage() {
       a.download = `expense-tracker-backup-${new Date().toISOString().split('T')[0]}.json`;
       a.click();
       URL.revokeObjectURL(url);
-} catch (err) {
+  } catch (err) {
       console.error('Failed to export data:', err);
     }
   };
@@ -327,16 +372,23 @@ export default function SettingsPage() {
     if (text !== 'DELETE') return;
 
     try {
-      const { data: { user } } = await supabase.auth.getUser();
       if (!user) return;
 
+      // Helper to delete all items of a resource
+      const deleteAll = async (listFn: () => Promise<any[]>, deleteFn: (id: string) => Promise<void>) => {
+        const items = await listFn();
+        for (const item of items) {
+          await deleteFn(item.id);
+        }
+      };
+
       // Delete in order respecting FK
-      await supabase.from('transactions').delete().eq('user_id', user.id);
-      await supabase.from('budgets').delete().eq('user_id', user.id);
-      await supabase.from('recurring_transactions').delete().eq('user_id', user.id);
-      await supabase.from('categories').delete().eq('user_id', user.id);
-      await supabase.from('accounts').delete().eq('user_id', user.id);
-      await supabase.from('user_settings').delete().eq('user_id', user.id);
+      await deleteAll(transactionsApi.list, transactionsApi.delete);
+      await deleteAll(budgetsApi.list, budgetsApi.delete);
+      await deleteAll(recurringApi.list, recurringApi.delete);
+      await deleteAll(categoriesApi.list, categoriesApi.delete);
+      await deleteAll(accountsApi.list, accountsApi.delete);
+      // user_settings: no delete endpoint, skip
       // profiles keep (auth user)
       alert('All data has been deleted.');
       fetchData();
@@ -355,15 +407,12 @@ export default function SettingsPage() {
     if (text !== 'CLEAR TRANSACTIONS') return;
 
     try {
-      const { data: { user } } = await supabase.auth.getUser();
       if (!user) return;
 
-      const { error } = await supabase
-        .from('transactions')
-        .delete()
-        .eq('user_id', user.id);
-
-      if (error) throw error;
+      const items = await transactionsApi.list();
+      for (const item of items) {
+        await transactionsApi.delete(item.id);
+      }
 
       alert('All transactions have been cleared.');
       fetchData();
@@ -373,269 +422,7 @@ export default function SettingsPage() {
     }
   };
 
-  // ---------- PhonePe Import Helpers ----------
-  const parseCSV = (text: string): any[] => {
-    const lines = text.trim().split('\n');
-    if (lines.length < 2) return [];
-    const headers = lines[0].split(',').map(h => h.trim().toLowerCase());
-    const rows = lines.slice(1).map(line => {
-      const vals = line.split(',').map(v => v.trim());
-      const obj: any = {};
-      headers.forEach((h, i) => { obj[h] = vals[i] ?? ''; });
-      return obj;
-    });
-    return rows;
-  };
-
-  const parseAmount = (value: unknown): number => {
-    if (typeof value === 'number') {
-      return Number.isFinite(value) ? value : 0;
-    }
-    if (typeof value === 'string') {
-      const cleaned = value.replace(/[^0-9.-]+/g, '');
-      const parsed = Number.parseFloat(cleaned);
-      return Number.isFinite(parsed) ? parsed : 0;
-    }
-    return 0;
-  };
-
-  const isSelfTransfer = (desc: string): boolean => {
-    const d = desc.toLowerCase();
-    return (
-      /transfer\s+(to|from).*\(self\)/.test(d) ||
-      /self\s*transfer/.test(d) ||
-      /transfer\s+to\s+.*self/.test(d) ||
-      /transfer\s+from\s+.*self/.test(d)
-    );
-  };
-
-  const normalizeDesc = (s: string): string => {
-    return s.toLowerCase().trim().replace(/\s+/g, ' ').replace(/[.,;:]+/g, '');
-  };
-
-  const stripCorporateSuffixes = (s: string): string => {
-    return s
-      .replace(/\b(limited|ltd|pvt|private|inc|corp|corporation|company|co|llp|india|foods|services|solutions|technologies|systems|enterprises|ventures|group|holdings)\b/g, '')
-      .replace(/\s+/g, ' ')
-      .trim();
-  };
-
-  const extractMerchantKey = (desc: string): string => {
-    let cleaned = desc.toLowerCase().trim().replace(/[^a-z0-9\s]/g, ' ');
-    cleaned = stripCorporateSuffixes(cleaned);
-    cleaned = cleaned.replace(/\s+/g, ' ');
-    const words = cleaned.split(' ').filter(w => w.length > 2);
-    // Take first two meaningful words as merchant identifier
-    return words.slice(0, 2).join(' ');
-  };
-
-  const getCategoryForTransaction = (description: string, type: 'income' | 'expense' | 'transfer', categories: Category[]): string => {
-    // Priority 1: User-learned mappings
-    const merchantKey = extractMerchantKey(description);
-    if (learnedMap[merchantKey]) {
-      const learnedCat = learnedMap[merchantKey];
-      const catExists = categories.find(c => c.name === learnedCat && c.type === (type === 'transfer' ? 'expense' : type));
-      if (catExists) return learnedCat;
-    }
-
-    // Normalized description for keyword matching
-    const normDesc = stripCorporateSuffixes(description.toLowerCase());
-
-    // Priority 2: Strong exact merchant mappings (high confidence)
-    const merchantMap: Record<string, string> = {
-      // Food
-      'swiggy': 'Food',
-      'zomato': 'Food',
-      'blinkit': 'Food',
-      'zepto': 'Food',
-      'instamart': 'Food',
-      'bigbasket': 'Food',
-      'dominos': 'Food',
-      'domino': 'Food',
-      'pizza hut': 'Food',
-      'pizza': 'Food',
-      'biryani': 'Food',
-      'juice': 'Food',
-      'sugar cane': 'Food',
-      'bakery': 'Food',
-      'cafe': 'Food',
-      'restaurant': 'Food',
-      'hotel': 'Food', // will be weighed with other keywords
-      // Transport
-      'uber': 'Transportation',
-      'ola': 'Transportation',
-      'rapido': 'Transportation',
-      'namma yatri': 'Transportation',
-      'metro': 'Transportation',
-      'bmtc': 'Transportation',
-      'cab': 'Transportation',
-      'taxi': 'Transportation',
-      'parking': 'Transportation',
-      'fastag': 'Transportation',
-      // Shopping
-      'amazon': 'Shopping',
-      'flipkart': 'Shopping',
-      'myntra': 'Shopping',
-      'meesho': 'Shopping',
-      'ajio': 'Shopping',
-      'nykaa': 'Shopping',
-      'croma': 'Shopping',
-      'reliance digital': 'Shopping',
-      // Entertainment
-      'netflix': 'Entertainment',
-      'spotify': 'Entertainment',
-      'youtube premium': 'Entertainment',
-      'prime video': 'Entertainment',
-      'disney': 'Entertainment',
-      'sony liv': 'Entertainment',
-      'hotstar': 'Entertainment',
-      'steam': 'Entertainment',
-      'playstation': 'Entertainment',
-      'xbox': 'Entertainment',
-      // Bills
-      'bescom': 'Bills & Utilities',
-      'electricity': 'Bills & Utilities',
-      'water bill': 'Bills & Utilities',
-      'gas bill': 'Bills & Utilities',
-      'broadband': 'Bills & Utilities',
-      'airtel': 'Bills & Utilities',
-      'jio': 'Bills & Utilities',
-      'vi': 'Bills & Utilities',
-      'bsnl': 'Bills & Utilities',
-      'recharge': 'Bills & Utilities',
-      'bbps': 'Bills & Utilities',
-      // Health
-      'apollo': 'Health',
-      '1mg': 'Health',
-      'pharmeasy': 'Health',
-      'netmeds': 'Health',
-      'hospital': 'Health',
-      'pharmacy': 'Health',
-      'medical': 'Health',
-      'clinic': 'Health',
-      'diagnostic': 'Health',
-      // Rent
-      'rent': 'Rent',
-      'landlord': 'Rent',
-      // Income (only when type is income)
-      'salary': 'Income',
-      'payroll': 'Income',
-      'employer': 'Income',
-      'stipend': 'Income',
-      'refund': 'Income',
-      // Cash
-      'atm': 'Cash',
-      'cash withdrawal': 'Cash',
-      // Transfer (handled by self-transfer detection)
-    };
-
-    // Check exact merchant key first
-    for (const [merchant, cat] of Object.entries(merchantMap)) {
-      if (normDesc.includes(merchant)) {
-        // For Income category, ensure transaction type is income
-        if (cat === 'Income' && type !== 'income') continue;
-        // For Transfer category, ensure type is transfer (but we handle transfers earlier)
-        if (cat === 'Transfer' && type !== 'transfer') continue;
-        // Verify category exists for this type
-        const catExists = categories.find(c => c.name === cat && c.type === (type === 'transfer' ? 'expense' : type));
-        if (catExists) return cat;
-      }
-    }
-
-    // Priority 3: Strong category keywords (broader)
-    const catKeywords: Record<string, string[]> = {
-      Food: ['food', 'restaurant', 'cafe', 'bakery', 'juice', 'sweets', 'biryani', 'pizza', 'hotel'],
-      Transportation: ['uber', 'ola', 'rapido', 'namma yatri', 'metro', 'bmtc', 'bus', 'cab', 'taxi', 'parking', 'fastag'],
-      Shopping: ['amazon', 'flipkart', 'myntra', 'meesho', 'ajio', 'nykaa', 'croma', 'reliance digital', 'shopping'],
-      'Bills & Utilities': ['electricity', 'bescom', 'water', 'gas', 'broadband', 'airtel', 'jio', 'vi', 'bsnl', 'recharge', 'bbps', 'bill'],
-      Entertainment: ['netflix', 'spotify', 'youtube', 'prime', 'disney', 'sony', 'hotstar', 'steam', 'playstation', 'xbox', 'gaming'],
-      Health: ['apollo', '1mg', 'pharmeasy', 'netmeds', 'hospital', 'pharmacy', 'medical', 'clinic', 'diagnostic'],
-      Rent: ['rent', 'landlord'],
-      Income: ['salary', 'payroll', 'employer', 'stipend', 'refund', 'cashback'],
-      Cash: ['atm', 'cash withdrawal', 'withdrawal'],
-    };
-
-    for (const [cat, keywords] of Object.entries(catKeywords)) {
-      if (keywords.some(k => normDesc.includes(k))) {
-        if (cat === 'Income' && type !== 'income') continue;
-        const catExists = categories.find(c => c.name === cat && c.type === (type === 'transfer' ? 'expense' : type));
-        if (catExists) return cat;
-      }
-    }
-
-    // Priority 4: Match existing user categories by name (fallback to Other)
-    const existingCat = categories.find(c => c.name.toLowerCase() === 'other' && c.type === (type === 'transfer' ? 'expense' : type));
-    if (existingCat) return existingCat.name;
-
-    // Fallback: default category of type
-    const def = categories.find(c => c.is_default && c.type === (type === 'transfer' ? 'expense' : type));
-    return def?.name || 'Other';
-  };
-
-  const normalizePhonePeRow = (row: any, categories: Category[]): any => {
-    const date = row.date || row.transaction_date || row.txn_date || '';
-    const description = row.description || row.narration || row.merchant || row.details || '';
-    const amountRaw = row.amount ?? row.txn_amount ?? row.debit ?? row.credit ?? 0;
-    const typeRaw = (row.type || row.txn_type || row.cr_dr || '').toLowerCase();
-
-    const amount = parseAmount(amountRaw);
-    let type: 'income' | 'expense' | 'transfer' = 'expense';
-
-    if (isSelfTransfer(description)) {
-      type = 'transfer';
-    } else if (typeRaw.includes('credit') || typeRaw.includes('cr') || typeRaw.includes('received')) {
-      type = 'income';
-    } else if (typeRaw.includes('debit') || typeRaw.includes('dr') || typeRaw.includes('paid')) {
-      type = 'expense';
-    } else {
-      if (amount > 0 && /salary|credit|received|refund|cashback/i.test(description)) type = 'income';
-    }
-
-    const category = getCategoryForTransaction(description, type, categories);
-
-    // Determine account type from notes (e.g., credit card identifiers)
-    const rawNotes = row.notes || row.note || '';
-    const lowerNotes = rawNotes.toLowerCase();
-    let accountType: 'cash' | 'bank_account' | 'credit_card' | 'savings' | 'investment' | 'other' = 'bank_account';
-    if (lowerNotes.includes('credit card') || lowerNotes.includes('slice') || lowerNotes.includes('credit_card')) {
-      accountType = 'credit_card';
-    } else if (lowerNotes.includes('cash')) {
-      accountType = 'cash';
-    }
-
-    return {
-      date: date.split('T')[0],
-      type,
-      amount: Math.abs(amount),
-      category,
-      description: description.slice(0, 200),
-      payment_method: 'upi',
-      account: accountType,
-      notes: rawNotes,
-    };
-  };
-
-  const detectDuplicates = async (transactions: any[], supabase: any, userId: string) => {
-    const fingerprints = transactions.map(t => generateTransactionFingerprint({
-      userId,
-      date: t.date,
-      type: t.type,
-      amount: t.amount,
-      description: t.description,
-      payment_method: t.payment_method,
-      account: t.account,
-    }));
-    
-    const { data: existing } = await supabase
-      .from('transactions')
-      .select('fingerprint')
-      .eq('user_id', userId)
-      .in('fingerprint', fingerprints);
-    
-    const existingFingerprints = new Set((existing ?? []).map((e: { fingerprint: string }) => e.fingerprint));
-    return transactions.map((t, i) => ({ ...t, isDuplicate: existingFingerprints.has(fingerprints[i]) }));
-  };
-
+  // ---------- PhonePe Import ----------
   const handlePhonePeFile = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
@@ -660,19 +447,72 @@ export default function SettingsPage() {
       rows = parseCSV(text);
     }
 
-    // normalize
-    const normalized = rows.map(r => normalizePhonePeRow(r, categories));
-    
-    // Deduplicate within the file first
-    const uniqueNormalized = deduplicateTransactions(normalized);
+    // normalize (shared PhonePe rules: categorization + learned mappings)
+    const normalized = rows.map(r => normalizePhonePeRow(r, categories, learnedMap));
+
+    // Deduplicate within the file first; the funding account (when detectable
+    // from notes) is part of the duplicate identity so identical payments made
+    // from two different accounts do not collapse.
+    const uniqueNormalized = deduplicateTransactions(normalized.map(n => ({
+      ...n,
+      userId: 'import',
+      account_id: n.source_account_last4 ? `src-${n.source_account_last4}` : null,
+    }))).map(n => {
+      const { userId, ...rest } = n;
+      return rest;
+    });
     setPhonepeParsed(uniqueNormalized);
 
-    // duplicate detection against database
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) { setPhonepeError('Not logged in'); return; }
-    const withDup = await detectDuplicates(uniqueNormalized, supabase, user.id);
-    setPhonepePreview(withDup);
+    // Resolve an account for every row (PhonePe notes → detected accounts)
+    const detectedByKey = new Map<string, DetectedAccount>();
+    const refs: AccountRef[] = uniqueNormalized.map(n => refForJsonRow({ row: n, accountName: null }, detectedByKey, accounts));
+    const detected = Array.from(detectedByKey.values());
+    setPhonepeDetectedAccounts(detected);
+    const withRefs = uniqueNormalized.map((n, i) => ({ ...n, accountRef: refs[i], isDuplicate: false }));
+    setPhonepeParsed(withRefs);
 
+    // duplicate detection against database (account identity included)
+    if (!user) { setPhonepeError('Not logged in'); return; }
+    try {
+      const existingTx = await transactionsApi.list();
+      const fps = new Set(existingTx.map(t => generateTransactionFingerprint({
+        userId: user.id,
+        date: t.date,
+        type: t.type,
+        amount: t.amount,
+        description: t.description,
+        payment_method: t.payment_method,
+        account: t.account,
+        account_id: t.account_id ?? null,
+      })));
+      setPhonepeExistingFps(fps);
+      const ctx = { userId: user.id, detected, accounts };
+      const withDup = withRefs.map(r => ({ ...r, isDuplicate: fps.has(rowFingerprint(r, ctx)) }));
+      setPhonepePreview(withDup);
+      summarizePhonepe(withDup);
+      return;
+    } catch {
+      setPhonepeError('Could not check for duplicates.');
+      setPhonepePreview(withRefs);
+    }
+
+    summarizePhonepe(withRefs);
+  };
+
+  interface PhonePePreviewRow {
+    date: string;
+    type: 'income' | 'expense' | 'transfer';
+    amount: number;
+    category: string;
+    description: string;
+    payment_method: string;
+    account: string;
+    notes: string;
+    accountRef: AccountRef;
+    isDuplicate: boolean;
+  }
+
+  const summarizePhonepe = (withDup: PhonePePreviewRow[]) => {
     const total = withDup.length;
     const income = withDup.filter(t => t.type === 'income').length;
     const expense = withDup.filter(t => t.type === 'expense').length;
@@ -689,47 +529,61 @@ export default function SettingsPage() {
     setPhonepeMessage('');
 
     try {
-      const { data: { user } } = await supabase.auth.getUser();
       if (!user) throw new Error('Not logged in');
 
-      const rowsToUpsert = phonepePreview
-        .filter(t => !t.isDuplicate)
-        .map(t => ({
-          user_id: user.id,
-          date: t.date,
-          type: t.type,
-          amount: Math.round(Number(t.amount) * 100) / 100,
-          category: t.category,
-          description: t.description,
-          payment_method: t.payment_method,
-          account: t.account,
-          notes: t.notes || '',
-        }));
+      const toImport = phonepePreview.filter(t => !t.isDuplicate);
 
-      if (!rowsToUpsert.length) {
+      if (!toImport.length) {
         setPhonepeMessage('Nothing new to import. All transactions already exist.');
         setPhonepeImporting(false);
         return;
       }
 
-      const batchSize = 50;
+      // Materialize detected accounts that don't exist yet (server-side findOrCreate is idempotent)
+      const createdByRef = new Map<string, string>();
+      for (const det of phonepeDetectedAccounts) {
+        const ref = `new:${det.key}`;
+        if (!toImport.some(t => t.accountRef === ref)) continue;
+        const created = await accountsApi.create({
+          name: det.name,
+          type: det.type,
+          bank_name: det.bank_name,
+          account_number_last4: det.account_number_last4 ?? null,
+          opening_balance: 0,
+          currency: 'INR',
+          is_active: true,
+        });
+        createdByRef.set(ref, created.id);
+      }
+
+      const rowsToUpsert = toImport.map(t => ({
+        date: t.date,
+        type: t.type,
+        amount: Math.round(Number(t.amount) * 100) / 100,
+        category: t.category,
+        description: t.description,
+        payment_method: t.payment_method,
+        account: resolveRefLabel(t.accountRef, phonepeDetectedAccounts, accounts),
+        account_id: refExistingId(t.accountRef) ?? createdByRef.get(t.accountRef) ?? null,
+        transfer_direction: t.type === 'transfer' ? 'out' as const : null,
+        notes: t.notes || '',
+      }));
+
       let insertedCount = 0;
       let skippedCount = 0;
 
-      for (let i = 0; i < rowsToUpsert.length; i += batchSize) {
-        const batch = rowsToUpsert.slice(i, i + batchSize);
-        const { data: inserted, error } = await supabase
-          .from('transactions')
-          .upsert(batch, {
-            onConflict: 'user_id,fingerprint',
-            ignoreDuplicates: true,
-          })
-          .select('id');
-        
-        if (error) throw new Error(`Import failed: ${error.message}`);
-        
-        insertedCount += inserted?.length || 0;
-        skippedCount += batch.length - (inserted?.length || 0);
+      for (const row of rowsToUpsert) {
+        try {
+          await transactionsApi.create(row);
+          insertedCount++;
+        } catch (e: any) {
+          // assume conflict (duplicate fingerprint) -> skip
+          if (e.message?.includes('409') || e.message?.includes('duplicate') || e.message?.includes('UNIQUE')) {
+            skippedCount++;
+          } else {
+            throw e;
+          }
+        }
       }
 
       setPhonepeMessage(`Successfully imported ${insertedCount} transactions. ${skippedCount} duplicates skipped.`);
@@ -737,6 +591,7 @@ export default function SettingsPage() {
       setPhonepeParsed([]);
       setPhonepePreview([]);
       setPhonepeSummary(null);
+      setPhonepeDetectedAccounts([]);
       fetchData();
     } catch (err: any) {
       setPhonepeError(err.message || 'Import failed');
@@ -750,21 +605,42 @@ export default function SettingsPage() {
     setPhonepeParsed([]);
     setPhonepePreview([]);
     setPhonepeSummary(null);
+    setPhonepeDetectedAccounts([]);
     setPhonepeError('');
     setPhonepeMessage('');
   };
 
   // ---------- Generic JSON Import Helpers ----------
   const normalizeTransaction = (tx: any, categories: Category[], accounts: Account[]): any => {
-    const type = (tx.type || 'expense').toLowerCase() as 'income' | 'expense' | 'transfer';
+    const rawType = (tx.type || 'expense').toString().toLowerCase();
+    const typeRaw = rawType.replace(/^cr$/, 'credit').replace(/^dr$/, 'debit');
+    let type: 'income' | 'expense' | 'transfer' = 'expense';
+    
+    if (typeRaw.includes('transfer')) {
+      type = 'transfer';
+    } else if (typeRaw.includes('credit') || typeRaw.includes('cr') || typeRaw.includes('received')) {
+      type = 'income';
+    } else if (typeRaw.includes('debit') || typeRaw.includes('dr') || typeRaw.includes('paid')) {
+      type = 'expense';
+    }
+    
     const amount = Math.abs(Number(tx.amount) || 0);
     
-    // Find matching category
-    let category = tx.category || 'Other';
-    const catExists = categories.find(c => c.name === category && c.type === (type === 'transfer' ? 'expense' : type));
-    if (!catExists) {
+    // Auto-categorize if no category provided or category doesn't exist for type
+    let category = tx.category || '';
+    if (!category) {
+      const suggested = suggestCategory(tx.description || tx.narration || '', categories, type);
+      if (suggested) category = suggested.name;
+    }
+    if (!category) {
       const defCat = categories.find(c => c.is_default && c.type === (type === 'transfer' ? 'expense' : type));
       category = defCat?.name || 'Other';
+    } else {
+      const catExists = categories.find(c => c.name === category && c.type === (type === 'transfer' ? 'expense' : type));
+      if (!catExists) {
+        const defCat = categories.find(c => c.is_default && c.type === (type === 'transfer' ? 'expense' : type));
+        category = defCat?.name || 'Other';
+      }
     }
 
     // Find matching account
@@ -783,27 +659,35 @@ export default function SettingsPage() {
       payment_method: (tx.payment_method || tx.paymentMethod || 'cash').toLowerCase(),
       account,
       notes: tx.notes || '',
+      transfer_direction: type === 'transfer' ? (tx.transfer_direction === 'in' ? 'in' : 'out') : null,
     };
   };
 
-  const detectImportDuplicates = async (transactions: any[], supabase: any, userId: string) => {
+  const detectImportDuplicates = async (transactions: any[]) => {
+    if (!user) return transactions;
+    const existingTx = await transactionsApi.list();
+    const existingFingerprints = new Set(
+      existingTx.map(t => generateTransactionFingerprint({
+        userId: user.id,
+        date: t.date,
+        type: t.type,
+        amount: t.amount,
+        description: t.description,
+        payment_method: t.payment_method,
+        account: t.account,
+        account_id: t.account_id ?? null,
+      }))
+    );
     const fingerprints = transactions.map(t => generateTransactionFingerprint({
-      userId,
+      userId: user.id,
       date: t.date,
       type: t.type,
       amount: t.amount,
       description: t.description,
       payment_method: t.payment_method,
       account: t.account,
+      account_id: t.account_id ?? null,
     }));
-    
-    const { data: existing } = await supabase
-      .from('transactions')
-      .select('fingerprint')
-      .eq('user_id', userId)
-      .in('fingerprint', fingerprints);
-    
-    const existingFingerprints = new Set((existing ?? []).map((e: { fingerprint: string }) => e.fingerprint));
     return transactions.map((t, i) => ({ ...t, isDuplicate: existingFingerprints.has(fingerprints[i]) }));
   };
 
@@ -834,7 +718,6 @@ export default function SettingsPage() {
         return;
       }
 
-      const { data: { user } } = await supabase.auth.getUser();
       if (!user) { setImportError('Not logged in'); return; }
 
       // Determine if it's a full backup or transaction-only
@@ -861,14 +744,20 @@ export default function SettingsPage() {
       setImportParsed(data);
 
       // Normalize transactions
-      const normalized = transactions.map(t => normalizeTransaction(t, categories, accounts));
-      
+      const normalized = transactions.map(t => normalizeTransaction(t, categories, accounts))
+        .map(t => ({
+          ...t,
+          // Resolve the account id by name now, so duplicate detection uses the
+          // same account identity the transaction will be stored with
+          account_id: (accounts.find(a => a.name.toLowerCase() === String(t.account).toLowerCase())?.id) ?? null,
+        }));
+
       // Deduplicate within the file first
-      const uniqueNormalized = deduplicateTransactions(normalized);
+      const uniqueNormalized = deduplicateTransactions(normalized.map(n => ({ ...n, userId: user.id })));
       setImportPreview(uniqueNormalized);
 
       // Detect duplicates against database
-      const withDup = await detectImportDuplicates(uniqueNormalized, supabase, user.id);
+      const withDup = await detectImportDuplicates(uniqueNormalized);
       setImportPreview(withDup);
 
       // Calculate summary
@@ -893,80 +782,97 @@ export default function SettingsPage() {
     setImportMessage('');
 
     try {
-      const { data: { user } } = await supabase.auth.getUser();
       if (!user) throw new Error('Not logged in');
 
       // If full backup, import categories, accounts, budgets, recurring first
       if (importParsed && (importParsed.categories || importParsed.accounts || importParsed.budgets || importParsed.recurring_transactions)) {
         // Import categories
         if (importParsed.categories?.length) {
-          const catRows = importParsed.categories.map((c: any) => ({
-            ...c,
-            user_id: user.id,
-            id: undefined,
-            created_at: undefined,
-          }));
-          const { error } = await supabase.from('categories').upsert(catRows, {
-            onConflict: 'user_id,name,type',
-            ignoreDuplicates: true,
-          });
-          if (error) throw new Error(`Categories import failed: ${error.message}`);
+          for (const c of importParsed.categories) {
+            try {
+              await categoriesApi.create({
+                name: c.name,
+                type: c.type,
+                icon: c.icon,
+                color: c.color,
+                is_default: c.is_default,
+              });
+            } catch (e: any) {
+              if (!(e.message?.includes('409') || e.message?.includes('duplicate') || e.message?.includes('UNIQUE'))) throw e;
+            }
+          }
         }
 
-        // Import accounts
+        // Import accounts (with bank metadata when the export has it)
         if (importParsed.accounts?.length) {
-          const accRows = importParsed.accounts.map((a: any) => ({
-            ...a,
-            user_id: user.id,
-            id: undefined,
-            created_at: undefined,
-            updated_at: undefined,
-          }));
-          const { error } = await supabase.from('accounts').upsert(accRows, {
-            onConflict: 'user_id,name',
-            ignoreDuplicates: true,
-          });
-          if (error) throw new Error(`Accounts import failed: ${error.message}`);
+          for (const a of importParsed.accounts) {
+            try {
+              await accountsApi.create({
+                name: a.name,
+                type: a.type,
+                bank_name: a.bank_name ?? null,
+                account_number_last4: a.account_number_last4 ?? null,
+                opening_balance: a.opening_balance,
+                currency: a.currency,
+                is_active: a.is_active ?? true,
+              });
+            } catch (e: any) {
+              if (!(e.message?.includes('409') || e.message?.includes('duplicate') || e.message?.includes('UNIQUE'))) throw e;
+            }
+          }
         }
 
         // Import budgets
         if (importParsed.budgets?.length) {
-          const budRows = importParsed.budgets.map((b: any) => ({
-            ...b,
-            user_id: user.id,
-            id: undefined,
-            created_at: undefined,
-            updated_at: undefined,
-          }));
-          const { error } = await supabase.from('budgets').upsert(budRows, {
-            onConflict: 'user_id,category_id,month',
-            ignoreDuplicates: true,
-          });
-          if (error) throw new Error(`Budgets import failed: ${error.message}`);
+          for (const b of importParsed.budgets) {
+            try {
+              await budgetsApi.create({
+                category_id: b.category_id,
+                month: b.month,
+                amount: b.amount,
+                notes: b.notes,
+              });
+            } catch (e: any) {
+              if (!(e.message?.includes('409') || e.message?.includes('duplicate') || e.message?.includes('UNIQUE'))) throw e;
+            }
+          }
         }
 
         // Import recurring transactions
         if (importParsed.recurring_transactions?.length) {
-          const recRows = importParsed.recurring_transactions.map((r: any) => ({
-            ...r,
-            user_id: user.id,
-            id: undefined,
-            created_at: undefined,
-            updated_at: undefined,
-          }));
-          const { error } = await supabase.from('recurring_transactions').upsert(recRows, {
-            onConflict: 'user_id,id',
-            ignoreDuplicates: true,
-          });
-          if (error) throw new Error(`Recurring transactions import failed: ${error.message}`);
+          for (const r of importParsed.recurring_transactions) {
+            try {
+              await recurringApi.create({
+                name: r.name,
+                amount: r.amount,
+                category: r.category,
+                subcategory: r.subcategory,
+                description: r.description,
+                frequency: r.frequency,
+                start_date: r.start_date,
+                end_date: r.end_date,
+                payment_method: r.payment_method,
+                account: r.account,
+                day_of_month: r.day_of_month,
+                day_of_week: r.day_of_week,
+                is_active: r.is_active ?? true,
+              });
+            } catch (e: any) {
+              if (!(e.message?.includes('409') || e.message?.includes('duplicate') || e.message?.includes('UNIQUE'))) throw e;
+            }
+          }
         }
       }
 
-      // Import new transactions only
+      // Import new transactions only; resolve account ids by (possibly newly imported) account name
+      const postImportAccounts = (importParsed && importParsed.accounts?.length)
+        ? await accountsApi.list()
+        : accounts;
+      const accIdByLowerName = new Map(postImportAccounts.map(a => [a.name.toLowerCase(), a.id]));
+
       const rowsToUpsert = importPreview
         .filter(t => !t.isDuplicate)
         .map(t => ({
-          user_id: user.id,
           date: t.date,
           type: t.type,
           amount: Math.round(Number(t.amount) * 100) / 100,
@@ -974,6 +880,8 @@ export default function SettingsPage() {
           description: t.description,
           payment_method: t.payment_method,
           account: t.account,
+          account_id: accIdByLowerName.get(String(t.account).toLowerCase()) ?? null,
+          transfer_direction: t.type === 'transfer' ? (t.transfer_direction ?? 'out') : null,
           notes: t.notes || '',
         }));
 
@@ -983,24 +891,20 @@ export default function SettingsPage() {
         return;
       }
 
-      const batchSize = 50;
       let insertedCount = 0;
       let skippedCount = 0;
 
-      for (let i = 0; i < rowsToUpsert.length; i += batchSize) {
-        const batch = rowsToUpsert.slice(i, i + batchSize);
-        const { data: inserted, error } = await supabase
-          .from('transactions')
-          .upsert(batch, {
-            onConflict: 'user_id,fingerprint',
-            ignoreDuplicates: true,
-          })
-          .select('id');
-        
-        if (error) throw new Error(`Import failed: ${error.message}`);
-        
-        insertedCount += inserted?.length || 0;
-        skippedCount += batch.length - (inserted?.length || 0);
+      for (const row of rowsToUpsert) {
+        try {
+          await transactionsApi.create(row);
+          insertedCount++;
+        } catch (e: any) {
+          if (e.message?.includes('409') || e.message?.includes('duplicate') || e.message?.includes('UNIQUE')) {
+            skippedCount++;
+          } else {
+            throw e;
+          }
+        }
       }
 
       setImportMessage(`Successfully imported ${insertedCount} transactions. ${skippedCount} duplicates skipped.`);
@@ -1213,7 +1117,10 @@ export default function SettingsPage() {
 
           <Card>
             <CardContent className="space-y-3">
-              {accounts.map(acc => (
+              {accounts.map(acc => {
+                const txCount = accountTxCounts[acc.id] || 0;
+                const balance = accountBalances[acc.id];
+                return (
                 <div key={acc.id} className="flex items-center justify-between p-4 border rounded-lg">
                   <div className="flex items-center gap-3">
                     <div className="h-12 w-12 rounded-lg bg-blue-100 flex items-center justify-center">
@@ -1225,32 +1132,25 @@ export default function SettingsPage() {
                       {acc.type === 'other' && '📦'}
                     </div>
                     <div>
-                      <p className="font-medium">{acc.name}</p>
-                      <p className="text-sm text-muted-foreground capitalize">{acc.type.replace('_', ' ')} · {formatCurrency(acc.opening_balance)} {acc.currency}</p>
+                      <p className="font-medium">{formatAccountLabel(acc)}</p>
+                      <p className="text-sm text-muted-foreground capitalize">
+                        {acc.type.replace('_', ' ')}
+                        {acc.account_number_last4 ? ` · ••••${acc.account_number_last4}` : ''}
+                        {' · '}{formatCurrency(balance ?? acc.opening_balance)} {acc.currency}
+                        {' · '}{txCount} transaction{txCount === 1 ? '' : 's'}
+                      </p>
                     </div>
                   </div>
                   <div className="flex items-center gap-2">
-                    <Button variant="outline" size="icon" onClick={() => { setEditingAccount(acc); accountForm.reset({ name: acc.name, type: acc.type, opening_balance: acc.opening_balance, currency: acc.currency }); setAccountDialogOpen(true); }}>
+                    <Button variant="outline" size="icon" onClick={() => { setEditingAccount(acc); accountForm.reset({ name: acc.name, type: acc.type, bank_name: acc.bank_name || '', account_number_last4: acc.account_number_last4 || '', opening_balance: acc.opening_balance, currency: acc.currency }); setAccountDialogOpen(true); }}>
                       <Edit className="h-4 w-4" />
                     </Button>
-                    <AlertDialog>
-                      <AlertDialogTrigger asChild>
-                        <Button variant="ghost" size="icon" className="text-destructive hover:text-destructive">
-                          <Trash2 className="h-4 w-4" />
-                        </Button>
-                      </AlertDialogTrigger>
-                      <AlertDialogContent>
-                        <AlertDialogHeader>
-                          <AlertDialogTitle>Delete account</AlertDialogTitle>
-                          <AlertDialogDescription>Are you sure you want to delete this account?</AlertDialogDescription>
-                        </AlertDialogHeader>
-                        <AlertDialogAction onClick={() => handleDeleteAccount(acc)}>Delete</AlertDialogAction>
-                        <AlertDialogCancel>Cancel</AlertDialogCancel>
-                      </AlertDialogContent>
-                    </AlertDialog>
+                    <Button variant="ghost" size="icon" className="text-destructive hover:text-destructive" onClick={() => openDeleteAccount(acc)}>
+                      <Trash2 className="h-4 w-4" />
+                    </Button>
                   </div>
                 </div>
-              ))}
+              );})}
               {accounts.length === 0 && (
                 <div className="text-center py-8 text-muted-foreground">
                   No accounts added yet. Add your first account to get started.
@@ -1258,6 +1158,66 @@ export default function SettingsPage() {
               )}
             </CardContent>
           </Card>
+
+          {/* Safe account deletion: transactions are never silently dropped */}
+          <Dialog open={!!deleteAccount} onOpenChange={(open) => { if (!open) setDeleteAccount(null); }}>
+            <DialogContent>
+              <DialogHeader>
+                <DialogTitle>Delete {deleteAccount ? formatAccountLabel(deleteAccount) : 'account'}</DialogTitle>
+                <DialogDescription>
+                  Choose what happens to the transactions of this account. Transactions are never deleted unless you explicitly choose that option.
+                </DialogDescription>
+              </DialogHeader>
+              <div className="space-y-3 py-2">
+                <p className="text-sm text-muted-foreground">
+                  This account has {deleteAccount ? (accountTxCounts[deleteAccount.id] || 0) : 0} transaction(s).
+                </p>
+                <div className="space-y-2">
+                  <label className="flex items-start gap-3 rounded-lg border p-3 cursor-pointer">
+                    <input type="radio" name="delete-mode" className="mt-1" checked={deleteMode === 'unassign'} onChange={() => setDeleteMode('unassign')} />
+                    <span>
+                      <span className="font-medium text-sm">Keep transactions, unassign account</span>
+                      <span className="block text-xs text-muted-foreground">Transactions stay in your history without a linked account.</span>
+                    </span>
+                  </label>
+                  <label className="flex items-start gap-3 rounded-lg border p-3 cursor-pointer">
+                    <input type="radio" name="delete-mode" className="mt-1" checked={deleteMode === 'reassign'} onChange={() => setDeleteMode('reassign')} />
+                    <span className="flex-1">
+                      <span className="font-medium text-sm">Reassign transactions to another account</span>
+                      <span className="block text-xs text-muted-foreground mb-2">Transfers and history are preserved on the target account.</span>
+                      {deleteMode === 'reassign' && (
+                        <Select value={deleteReassignTo} onValueChange={setDeleteReassignTo}>
+                          <SelectTrigger><SelectValue placeholder="Select target account" /></SelectTrigger>
+                          <SelectContent>
+                            {accounts.filter(a => a.id !== deleteAccount?.id).map(a => (
+                              <SelectItem key={a.id} value={a.id}>{formatAccountLabel(a)}</SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      )}
+                    </span>
+                  </label>
+                  <label className="flex items-start gap-3 rounded-lg border border-destructive/40 p-3 cursor-pointer">
+                    <input type="radio" name="delete-mode" className="mt-1" checked={deleteMode === 'delete'} onChange={() => setDeleteMode('delete')} />
+                    <span>
+                      <span className="font-medium text-sm text-destructive">Delete transactions too</span>
+                      <span className="block text-xs text-muted-foreground">Permanently deletes this account and all of its transactions.</span>
+                    </span>
+                  </label>
+                </div>
+              </div>
+              <DialogFooter>
+                <Button variant="outline" onClick={() => setDeleteAccount(null)}>Cancel</Button>
+                <Button
+                  variant="destructive"
+                  disabled={deleteMode === 'reassign' && !deleteReassignTo}
+                  onClick={handleDeleteAccount}
+                >
+                  Delete Account
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
 
           <Dialog open={accountDialogOpen} onOpenChange={setAccountDialogOpen}>
             <DialogContent>
@@ -1278,6 +1238,16 @@ export default function SettingsPage() {
                       {ACCOUNT_TYPES.map(t => <SelectItem key={t} value={t}>{t.replace('_', ' ')}</SelectItem>)}
                     </SelectContent>
                   </Select>
+                </div>
+                <div className="grid gap-4 md:grid-cols-2">
+                  <div className="space-y-2">
+                    <Label>Bank Name (optional)</Label>
+                    <Input {...accountForm.register('bank_name')} placeholder="e.g., HDFC Bank" />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Account No. (last 4 digits)</Label>
+                    <Input {...accountForm.register('account_number_last4')} placeholder="4521" maxLength={4} inputMode="numeric" />
+                  </div>
                 </div>
                 <div className="grid gap-4 md:grid-cols-2">
                   <div className="space-y-2">
@@ -1580,6 +1550,7 @@ export default function SettingsPage() {
                         <th className="pb-2 text-right">Amount</th>
                         <th className="pb-2">Type</th>
                         <th className="pb-2">Category</th>
+                        <th className="pb-2">Account</th>
                         <th className="pb-2">Status</th>
                       </tr>
                     </thead>
@@ -1614,6 +1585,34 @@ export default function SettingsPage() {
                                 <SelectContent>
                                   {availableCats.map(cat => (
                                     <SelectItem key={cat} value={cat}>{cat}</SelectItem>
+                                  ))}
+                                </SelectContent>
+                              </Select>
+                            </td>
+                            <td className="py-2 px-2 whitespace-nowrap">
+                              <Select
+                                value={t.accountRef}
+                                onValueChange={(val) => {
+                                  const updated = [...phonepePreview];
+                                  const next = { ...updated[idx], accountRef: val };
+                                  // Recompute duplicate status with the new account identity
+                                  next.isDuplicate = phonepeExistingFps.has(rowFingerprint(
+                                    { ...next },
+                                    { userId: user?.id ?? '', detected: phonepeDetectedAccounts, accounts },
+                                  ));
+                                  updated[idx] = next;
+                                  setPhonepePreview(updated);
+                                }}
+                              >
+                                <SelectTrigger className="w-[160px]"><SelectValue /></SelectTrigger>
+                                <SelectContent>
+                                  {phonepeDetectedAccounts.map(d => (
+                                    <SelectItem key={d.key} value={d.existingId ? `acc:${d.existingId}` : `new:${d.key}`}>
+                                      {detectedLabel(d)}{d.existingId ? '' : ' (new)'}
+                                    </SelectItem>
+                                  ))}
+                                  {accounts.map(a => (
+                                    <SelectItem key={a.id} value={`acc:${a.id}`}>{formatAccountLabel(a)}</SelectItem>
                                   ))}
                                 </SelectContent>
                               </Select>

@@ -5,12 +5,15 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Progress } from '@/components/ui/progress';
 import { formatCurrency, calculatePercentage } from '@/utils/currency';
-import { createClient } from '@/lib/supabase/client';
+import { useAuth } from '@/lib/auth-context';
 import { MonthlySummary, CategoryBreakdown, Budget } from '@/types';
 import { ChevronLeft, ChevronRight, Loader2, AlertTriangle, CheckCircle } from 'lucide-react';
 import { cn } from '@/utils/currency';
 import { getMonthKey, formatMonthYear, parseMonthKey, getMonthRange, getPreviousMonth, getNextMonth } from '@/utils/date';
 import { CalculationEngine } from '@/lib/calculation-engine';
+import { transactionsApi } from '@/lib/api/transactions';
+import { budgetsApi } from '@/lib/api/budgets';
+import { categoriesApi } from '@/lib/api/categories';
 
 export default function MonthlyPage() {
   const [currentMonth, setCurrentMonth] = useState(getMonthKey(new Date()));
@@ -19,25 +22,27 @@ export default function MonthlyPage() {
   const [categories, setCategories] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
 
-  const supabase = createClient();
+  const { user } = useAuth();
   const engine = new CalculationEngine({ budgets });
 
   const fetchData = useCallback(async () => {
     try {
       setLoading(true);
-      const { data: { user } } = await supabase.auth.getUser();
       if (!user) return;
 
       const { start, end } = getMonthRange(parseMonthKey(currentMonth));
       
       const [txRes, budRes, catRes] = await Promise.all([
-        supabase.from('transactions').select('*').eq('user_id', user.id).gte('date', start.toISOString().split('T')[0]).lte('date', end.toISOString().split('T')[0]),
-        supabase.from('budgets').select('*').eq('user_id', user.id).eq('month', currentMonth),
-        supabase.from('categories').select('name').eq('user_id', user.id).eq('type', 'expense'),
+        transactionsApi.list({
+          dateFrom: start.toISOString().split('T')[0],
+          dateTo: end.toISOString().split('T')[0],
+        }),
+        budgetsApi.list(currentMonth),
+        categoriesApi.list(),
       ]);
 
-      if (txRes.data) {
-        const transactions = txRes.data;
+      if (txRes) {
+        const transactions = txRes;
         const income = transactions.filter(t => t.type === 'income').reduce((sum, t) => sum + t.amount, 0);
         const expenses = transactions.filter(t => t.type === 'expense').reduce((sum, t) => sum + t.amount, 0);
         
@@ -46,10 +51,11 @@ export default function MonthlyPage() {
           categorySpending[t.category] = (categorySpending[t.category] || 0) + t.amount;
         });
 
+        const expenseCategories = catRes.filter(c => c.type === 'expense');
         const categoryBreakdown: CategoryBreakdown[] = Object.entries(categorySpending).map(([category, actual]) => {
-          const budget = budRes.data?.find(b => {
-            const cat = catRes.data?.find(c => c.name === category);
-            return cat && b.category_id === cat.name;
+          const budget = budRes.find(b => {
+            const cat = expenseCategories.find(c => c.id === b.category_id);
+            return cat && cat.name === category;
           });
           const budgetAmount = budget?.amount || 0;
           return {
@@ -73,14 +79,14 @@ export default function MonthlyPage() {
         });
       }
 
-      if (budRes.data) setBudgets(budRes.data);
-      if (catRes.data) setCategories(catRes.data.map(c => c.name));
+      setBudgets(budRes);
+      setCategories(catRes.filter(c => c.type === 'expense').map(c => c.name));
     } catch (err) {
       console.error('Failed to load monthly data:', err);
     } finally {
       setLoading(false);
     }
-  }, [currentMonth, supabase]);
+  }, [currentMonth, user]);
 
   useEffect(() => {
     fetchData();
