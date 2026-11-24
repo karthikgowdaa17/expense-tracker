@@ -1,16 +1,56 @@
 import { API_BASE_URL } from './config';
-import { createClient } from '@/lib/supabase/client';
+import { getAccessToken, getRefreshToken, setAuthData, clearAuthData, getStoredUser } from './auth';
 
-const supabase = createClient();
+let isRefreshing = false;
+let refreshPromise: Promise<void> | null = null;
+
+async function refreshAccessTokenOnce(): Promise<void> {
+  if (isRefreshing && refreshPromise) {
+    return refreshPromise;
+  }
+
+  isRefreshing = true;
+  const refreshToken = getRefreshToken();
+  
+  if (!refreshToken) {
+    isRefreshing = false;
+    throw new Error('No refresh token');
+  }
+
+  refreshPromise = (async () => {
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/auth/refresh`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ refresh_token: refreshToken }),
+      });
+
+      if (!response.ok) {
+        throw new Error('Token refresh failed');
+      }
+
+      const newTokens = await response.json();
+      const currentUser = getStoredUser();
+      if (currentUser) {
+        setAuthData(newTokens, currentUser);
+      }
+    } catch {
+      clearAuthData();
+      throw new Error('Session expired');
+    } finally {
+      isRefreshing = false;
+      refreshPromise = null;
+    }
+  })();
+
+  return refreshPromise;
+}
 
 async function request<T>(path: string, options: RequestInit = {}, retry = true): Promise<T> {
   const headers = new Headers(options.headers);
   headers.set('Content-Type', 'application/json');
 
-  const {
-    data: { session },
-  } = await supabase.auth.getSession();
-  const token = session?.access_token;
+  const token = getAccessToken();
   if (token) {
     headers.set('Authorization', `Bearer ${token}`);
   }
@@ -21,19 +61,15 @@ async function request<T>(path: string, options: RequestInit = {}, retry = true)
   });
 
   if (res.status === 401 && retry) {
-    // Session may have expired; refresh and retry once
+    // Try to refresh the token
     try {
-      await supabase.auth.refreshSession();
-      const {
-        data: { session: newSession },
-      } = await supabase.auth.getSession();
-      const newToken = newSession?.access_token;
-      if (newToken) {
-        headers.set('Authorization', `Bearer ${newToken}`);
-        return request<T>(path, { ...options, headers }, false);
-      }
+      await refreshAccessTokenOnce();
+      // Retry the request once with new token
+      return request<T>(path, options, false);
     } catch {
+      // Refresh failed, clear auth and redirect to login
       if (typeof window !== 'undefined') {
+        clearAuthData();
         window.location.href = '/auth/login';
       }
       throw new Error('Session expired');

@@ -6,7 +6,7 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/com
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { createClient } from '@/lib/supabase/client';
+import { verifyEmail, resendVerification } from '@/lib/api/auth';
 import { Loader2, Mail, CheckCircle2, ArrowLeft, AlertCircle } from 'lucide-react';
 import Link from 'next/link';
 
@@ -18,22 +18,15 @@ function VerifyEmailForm() {
   const [success, setSuccess] = useState(false);
   const [message, setMessage] = useState('');
   const [email, setEmail] = useState('');
-  const [emailFromUrl, setEmailFromUrl] = useState<string | null>(null);
   const [resending, setResending] = useState(false);
 
   const searchParams = useSearchParams();
-  const supabase = createClient();
 
   const verifyEmailToken = async (token: string) => {
     setLoading(true);
     setError('');
     try {
-      const { error } = await supabase.auth.verifyOtp({
-        token,
-        type: 'email',
-        email: emailFromUrl!,
-      });
-      if (error) throw error;
+      await verifyEmail(token);
       setSuccess(true);
       setMessage('Email verified successfully! You can now sign in.');
     } catch (err) {
@@ -46,17 +39,16 @@ function VerifyEmailForm() {
   const handleResend = async (e: FormEvent) => {
     e.preventDefault();
     if (!email) return;
-
+    
     setResending(true);
     setError('');
     setMessage('');
-
+    
     try {
-      const { error } = await supabase.auth.resetPasswordForEmail(email, {
-        redirectTo: `${window.location.origin}/auth/reset-password`,
-      });
-      if (error) throw error;
-      setMessage('Verification email sent! Check your inbox.');
+      const result = await resendVerification(email);
+      setMessage(result.dev_token 
+        ? `Verification email sent! Dev token: ${result.dev_token}`
+        : 'Verification email sent! Check your inbox.');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to send verification email');
     } finally {
@@ -65,17 +57,14 @@ function VerifyEmailForm() {
   };
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     const token = searchParams.get('token');
-    const emailFromUrl = searchParams.get('email');
-    if (emailFromUrl) {
-      setEmailFromUrl(emailFromUrl);
-    }
     if (token) {
       verifyEmailToken(token);
     } else {
       setError('Missing verification token');
     }
-  }, [searchParams, supabase]);
+  }, [searchParams, verifyEmailToken]);
 
   if (loading) {
     return (
@@ -150,7 +139,7 @@ function VerifyEmailForm() {
               </form>
 
               <p className="text-center text-sm text-muted-foreground">
-                <Link href="/auth/login" className="font-medium text-primary hover-underline">
+                <Link href="/auth/login" className="font-medium text-primary hover:underline">
                   <ArrowLeft className="mr-1 h-4 w-4 inline" />
                   Back to Sign In
                 </Link>
