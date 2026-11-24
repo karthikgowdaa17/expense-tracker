@@ -34,8 +34,8 @@ export function Header() {
     return 'U';
   };
 
-  const fullName = user?.profile?.full_name ?? null;
-  const avatarUrl = user?.profile?.avatar_url ?? null;
+  const fullName = user?.user_metadata?.full_name ?? null;
+  const avatarUrl = user?.user_metadata?.avatar_url ?? null;
   const email = user?.email ?? null;
 
   return (

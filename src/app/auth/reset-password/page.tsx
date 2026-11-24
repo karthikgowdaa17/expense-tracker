@@ -6,7 +6,7 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/com
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { resetPassword } from '@/lib/api/auth';
+import { createClient } from '@/lib/supabase/client';
 import { Loader2, Lock, Eye, EyeOff, ArrowLeft } from 'lucide-react';
 import Link from 'next/link';
 
@@ -15,24 +15,28 @@ function ResetPasswordForm() {
   const [confirmPassword, setConfirmPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
-  const [showPassword, setShowPassword] = useState(false);
   const [token, setToken] = useState<string | null>(null);
+  const [email, setEmailFromUrl] = useState<string | null>(null);
   const [tokenValid, setTokenValid] = useState(false);
   const [checkingToken, setCheckingToken] = useState(true);
+  const [showPassword, setShowPassword] = useState(false);
 
   const router = useRouter();
   const searchParams = useSearchParams();
+  const supabase = createClient();
 
   useEffect(() => {
     (async () => {
       const tokenFromUrl = searchParams.get('token');
-      if (tokenFromUrl) {
+      const emailFromUrl = searchParams.get('email');
+      if (tokenFromUrl && emailFromUrl) {
         setToken(tokenFromUrl);
+        setEmailFromUrl(emailFromUrl);
         setTokenValid(true);
       }
       setCheckingToken(false);
     })();
-  }, [searchParams]);
+  }, [searchParams, supabase]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -56,7 +60,18 @@ function ResetPasswordForm() {
     setLoading(true);
 
     try {
-      await resetPassword(token, password, confirmPassword);
+      const { error } = await supabase.auth.verifyOtp({
+        token,
+        type: 'recovery',
+        email: email!,
+      });
+      if (error) throw error;
+
+      const { error: updateError } = await supabase.auth.updateUser({
+        password,
+      });
+      if (updateError) throw updateError;
+
       router.push('/auth/login?message=Password updated successfully');
       router.refresh();
     } catch (err: unknown) {
@@ -84,7 +99,7 @@ function ResetPasswordForm() {
           </CardHeader>
           <CardContent className="space-y-4">
             <p className="text-center text-sm text-muted-foreground">
-              <Link href="/auth/forgot-password" className="font-medium text-primary hover:underline">
+              <Link href="/auth/forgot-password" className="font-medium text-primary hover-underline">
                 <ArrowLeft className="mr-1 h-4 w-4 inline" />
                 Request a new reset link
               </Link>
@@ -161,7 +176,7 @@ function ResetPasswordForm() {
           </form>
 
           <p className="text-center text-sm text-muted-foreground">
-            <Link href="/auth/login" className="font-medium text-primary hover:underline">
+            <Link href="/auth/login" className="font-medium text-primary hover-underline">
               <ArrowLeft className="mr-1 h-4 w-4 inline" />
               Back to Sign In
             </Link>

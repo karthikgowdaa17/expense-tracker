@@ -6,7 +6,7 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/com
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { forgotPassword } from '@/lib/api/auth';
+import { createClient } from '@/lib/supabase/client';
 import { Loader2, Mail, ArrowLeft } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 
@@ -15,23 +15,22 @@ export default function ForgotPasswordPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState(false);
-  const [devToken, setDevToken] = useState<string | null>(null);
 
   const router = useRouter();
+  const supabase = createClient();
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
     setError('');
     setSuccess(false);
-    setDevToken(null);
 
     try {
-      const result = await forgotPassword(email);
+      const { error } = await supabase.auth.resetPasswordForEmail(email, {
+        redirectTo: `${window.location.origin}/auth/reset-password?email=${encodeURIComponent(email)}`,
+      });
+      if (error) throw error;
       setSuccess(true);
-      if (result.dev_token) {
-        setDevToken(result.dev_token);
-      }
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Failed to send reset link');
     } finally {
@@ -52,11 +51,6 @@ export default function ForgotPasswordPage() {
               <div className="p-3 text-sm text-green-600 bg-green-50 rounded-lg">
                 Reset link sent! Check your inbox.
               </div>
-              {devToken && (
-                <div className="p-3 text-sm bg-gray-100 rounded-lg font-mono break-all">
-                  <strong>Dev token:</strong> {devToken}
-                </div>
-              )}
             </div>
           ) : (
             <form onSubmit={handleSubmit} className="space-y-4">
@@ -91,7 +85,7 @@ export default function ForgotPasswordPage() {
           )}
 
           <p className="text-center text-sm text-muted-foreground">
-            <Link href="/auth/login" className="font-medium text-primary hover:underline">
+            <Link href="/auth/login" className="font-medium text-primary hover-underline">
               <ArrowLeft className="mr-1 h-4 w-4 inline" />
               Back to Sign In
             </Link>
