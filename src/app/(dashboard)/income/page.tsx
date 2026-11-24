@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { formatCurrency } from '@/utils/currency';
@@ -22,36 +22,36 @@ export default function IncomePage() {
 
   const { user } = useAuth();
 
-  const fetchData = useCallback(async () => {
-    try {
-      setLoading(true);
-      if (!user) return;
-
-      const { start, end } = getMonthRange(parseMonthKey(currentMonth));
-      const data = await transactionsApi.list({
-        dateFrom: start.toISOString().split('T')[0],
-        dateTo: end.toISOString().split('T')[0],
-        type: 'income',
-      });
-
-      if (data) {
-        const total = data.reduce((sum, t) => sum + t.amount, 0);
-        const byCategory: Record<string, number> = {};
-        data.forEach(t => {
-          byCategory[t.category] = (byCategory[t.category] || 0) + t.amount;
-        });
-        setIncomeData({ total, byCategory, transactions: data });
-      }
-    } catch (err) {
-      console.error('Failed to load income data:', err);
-    } finally {
-      setLoading(false);
-    }
-  }, [currentMonth, user]);
-
   useEffect(() => {
-    fetchData();
-  }, [fetchData]);
+    let ignore = false;
+    (async () => {
+      try {
+        setLoading(true);
+        if (!user) return;
+
+        const { start, end } = getMonthRange(parseMonthKey(currentMonth));
+        const data = await transactionsApi.list({
+          dateFrom: start.toISOString().split('T')[0],
+          dateTo: end.toISOString().split('T')[0],
+          type: 'income',
+        });
+
+        if (!ignore && data) {
+          const total = data.reduce((sum, t) => sum + t.amount, 0);
+          const byCategory: Record<string, number> = {};
+          data.forEach(t => {
+            byCategory[t.category] = (byCategory[t.category] || 0) + t.amount;
+          });
+          setIncomeData({ total, byCategory, transactions: data });
+        }
+      } catch (err) {
+        console.error('Failed to load income data:', err);
+      } finally {
+        if (!ignore) setLoading(false);
+      }
+    })();
+    return () => { ignore = true; };
+  }, [currentMonth, user]);
 
   const handlePreviousMonth = () => setCurrentMonth(prev => getMonthKey(getPreviousMonth(parseMonthKey(prev))));
   const handleNextMonth = () => setCurrentMonth(prev => getMonthKey(getNextMonth(parseMonthKey(prev))));

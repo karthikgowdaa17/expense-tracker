@@ -51,39 +51,62 @@ export default function DashboardPage() {
   const handleCurrentMonth = () => setCurrentMonth(getMonthKey(new Date()));
 
   useEffect(() => {
-    fetchData();
-    
-    const handleTransactionsUpdated = () => {
-      fetchData();
+    let ignore = false;
+    (async () => {
+      try {
+        setLoading(true);
+        if (!user) return;
+
+        const [txRes, catRes, budRes, accRes] = await Promise.all([
+          transactionsApi.list(),
+          categoriesApi.list(),
+          budgetsApi.list(),
+          accountsApi.list(),
+        ]);
+
+        if (!ignore) {
+          setTransactions(txRes);
+          setCategories(catRes);
+          setBudgets(budRes);
+          setAccounts(accRes);
+        }
+      } catch (err) {
+        if (!ignore) setError('Failed to load dashboard data');
+      } finally {
+        if (!ignore) setLoading(false);
+      }
+    })();
+
+    const handleTransactionsUpdated = async () => {
+      try {
+        setLoading(true);
+        if (!user) return;
+
+        const [txRes, catRes, budRes, accRes] = await Promise.all([
+          transactionsApi.list(),
+          categoriesApi.list(),
+          budgetsApi.list(),
+          accountsApi.list(),
+        ]);
+
+        if (!ignore) {
+          setTransactions(txRes);
+          setCategories(catRes);
+          setBudgets(budRes);
+          setAccounts(accRes);
+        }
+      } catch (err) {
+        if (!ignore) setError('Failed to load dashboard data');
+      } finally {
+        if (!ignore) setLoading(false);
+      }
     };
     window.addEventListener('transactions-updated', handleTransactionsUpdated);
     return () => {
+      ignore = true;
       window.removeEventListener('transactions-updated', handleTransactionsUpdated);
     };
-  }, [currentMonth]);
-
-  const fetchData = async () => {
-    try {
-      setLoading(true);
-      if (!user) return;
-
-      const [txRes, catRes, budRes, accRes] = await Promise.all([
-        transactionsApi.list(),
-        categoriesApi.list(),
-        budgetsApi.list(),
-        accountsApi.list(),
-      ]);
-
-      setTransactions(txRes);
-      setCategories(catRes);
-      setBudgets(budRes);
-      setAccounts(accRes);
-    } catch (err) {
-      setError('Failed to load dashboard data');
-    } finally {
-      setLoading(false);
-    }
-  };
+  }, [currentMonth, user]);
 
   const metrics = engine.getDashboardMetrics(currentMonth);
   const monthOverMonth = engine.calculateMonthOverMonthChange(currentMonth);

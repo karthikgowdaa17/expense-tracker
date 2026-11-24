@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Progress } from '@/components/ui/progress';
@@ -25,72 +25,74 @@ export default function MonthlyPage() {
   const { user } = useAuth();
   const engine = new CalculationEngine({ budgets });
 
-  const fetchData = useCallback(async () => {
-    try {
-      setLoading(true);
-      if (!user) return;
-
-      const { start, end } = getMonthRange(parseMonthKey(currentMonth));
-      
-      const [txRes, budRes, catRes] = await Promise.all([
-        transactionsApi.list({
-          dateFrom: start.toISOString().split('T')[0],
-          dateTo: end.toISOString().split('T')[0],
-        }),
-        budgetsApi.list(currentMonth),
-        categoriesApi.list(),
-      ]);
-
-      if (txRes) {
-        const transactions = txRes;
-        const income = transactions.filter(t => t.type === 'income').reduce((sum, t) => sum + t.amount, 0);
-        const expenses = transactions.filter(t => t.type === 'expense').reduce((sum, t) => sum + t.amount, 0);
-        
-        const categorySpending: Record<string, number> = {};
-        transactions.filter(t => t.type === 'expense').forEach(t => {
-          categorySpending[t.category] = (categorySpending[t.category] || 0) + t.amount;
-        });
-
-        const expenseCategories = catRes.filter(c => c.type === 'expense');
-        const categoryBreakdown: CategoryBreakdown[] = Object.entries(categorySpending).map(([category, actual]) => {
-          const budget = budRes.find(b => {
-            const cat = expenseCategories.find(c => c.id === b.category_id);
-            return cat && cat.name === category;
-          });
-          const budgetAmount = budget?.amount || 0;
-          return {
-            category,
-            budget: budgetAmount,
-            actual,
-            remaining: budgetAmount - actual,
-            percentage: budgetAmount > 0 ? calculatePercentage(actual, budgetAmount) : 0,
-            is_over_budget: actual > budgetAmount && budgetAmount > 0,
-          };
-        });
-
-        setSummary({
-          month: formatMonthYear(parseMonthKey(currentMonth)),
-          year: parseMonthKey(currentMonth).getFullYear(),
-          income,
-          expenses,
-          savings: income - expenses,
-          savings_rate: income > 0 ? calculatePercentage(income - expenses, income) : 0,
-          category_breakdown: categoryBreakdown,
-        });
-      }
-
-      setBudgets(budRes);
-      setCategories(catRes.filter(c => c.type === 'expense').map(c => c.name));
-    } catch (err) {
-      console.error('Failed to load monthly data:', err);
-    } finally {
-      setLoading(false);
-    }
-  }, [currentMonth, user]);
-
   useEffect(() => {
-    fetchData();
-  }, [fetchData]);
+    let ignore = false;
+    (async () => {
+      try {
+        setLoading(true);
+        if (!user) return;
+
+        const { start, end } = getMonthRange(parseMonthKey(currentMonth));
+        
+        const [txRes, budRes, catRes] = await Promise.all([
+          transactionsApi.list({
+            dateFrom: start.toISOString().split('T')[0],
+            dateTo: end.toISOString().split('T')[0],
+          }),
+          budgetsApi.list(currentMonth),
+          categoriesApi.list(),
+        ]);
+
+        if (!ignore && txRes) {
+          const transactions = txRes;
+          const income = transactions.filter(t => t.type === 'income').reduce((sum, t) => sum + t.amount, 0);
+          const expenses = transactions.filter(t => t.type === 'expense').reduce((sum, t) => sum + t.amount, 0);
+          
+          const categorySpending: Record<string, number> = {};
+          transactions.filter(t => t.type === 'expense').forEach(t => {
+            categorySpending[t.category] = (categorySpending[t.category] || 0) + t.amount;
+          });
+
+          const expenseCategories = catRes.filter(c => c.type === 'expense');
+          const categoryBreakdown: CategoryBreakdown[] = Object.entries(categorySpending).map(([category, actual]) => {
+            const budget = budRes.find(b => {
+              const cat = expenseCategories.find(c => c.id === b.category_id);
+              return cat && cat.name === category;
+            });
+            const budgetAmount = budget?.amount || 0;
+            return {
+              category,
+              budget: budgetAmount,
+              actual,
+              remaining: budgetAmount - actual,
+              percentage: budgetAmount > 0 ? calculatePercentage(actual, budgetAmount) : 0,
+              is_over_budget: actual > budgetAmount && budgetAmount > 0,
+            };
+          });
+
+          setSummary({
+            month: formatMonthYear(parseMonthKey(currentMonth)),
+            year: parseMonthKey(currentMonth).getFullYear(),
+            income,
+            expenses,
+            savings: income - expenses,
+            savings_rate: income > 0 ? calculatePercentage(income - expenses, income) : 0,
+            category_breakdown: categoryBreakdown,
+          });
+        }
+
+        if (!ignore) {
+          setBudgets(budRes);
+          setCategories(catRes.filter(c => c.type === 'expense').map(c => c.name));
+        }
+      } catch (err) {
+        console.error('Failed to load monthly data:', err);
+      } finally {
+        if (!ignore) setLoading(false);
+      }
+    })();
+    return () => { ignore = true; };
+  }, [currentMonth, user]);
 
   const handlePreviousMonth = () => setCurrentMonth(prev => getMonthKey(getPreviousMonth(parseMonthKey(prev))));
   const handleNextMonth = () => setCurrentMonth(prev => getMonthKey(getNextMonth(parseMonthKey(prev))));

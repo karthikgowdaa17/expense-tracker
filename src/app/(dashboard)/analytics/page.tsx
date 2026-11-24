@@ -17,59 +17,26 @@ const COLORS = ['#10B981', '#EF4444', '#3B82F6', '#F59E0B', '#8B5CF6', '#EC4899'
 
 export default function AnalyticsPage() {
   const [timeRange, setTimeRange] = useState<'monthly' | 'quarterly' | 'yearly' | 'custom'>('monthly');
-  const [analyticsData, setAnalyticsData] = useState<any>(null);
+  const [analyticsData, setAnalyticsData] = useState<{
+    chartData: Array<{ month: string; income: number; expenses: number; savings: number }>;
+    categoryData: Record<string, number>;
+    totalIncome: number;
+    totalExpenses: number;
+    totalSavings: number;
+    savingsRate: number;
+    avgMonthlyExpenses: number;
+    avgMonthlyIncome: number;
+    highestSpendingCategory: string;
+    highestSpendingAmount: number;
+    monthsAnalyzed: number;
+  } | null>(null);
   const [loading, setLoading] = useState(true);
   const [selectedAccountId, setSelectedAccountId] = useState<string>('all');
   const [accounts, setAccounts] = useState<Account[]>([]);
 
   const { user } = useAuth();
 
-  useEffect(() => {
-    fetchData();
-  }, [timeRange, selectedAccountId]);
-
-  const fetchData = async () => {
-    try {
-      setLoading(true);
-      if (!user) return;
-
-      const now = new Date();
-      let startDate: Date;
-      
-      switch (timeRange) {
-        case 'monthly':
-          startDate = new Date(now.getFullYear(), now.getMonth() - 11, 1);
-          break;
-        case 'quarterly':
-          startDate = new Date(now.getFullYear() - 2, 0, 1);
-          break;
-        case 'yearly':
-          startDate = new Date(now.getFullYear() - 4, 0, 1);
-          break;
-        default:
-          startDate = new Date(now.getFullYear() - 1, 0, 1);
-      }
-
-      const [data, accData] = await Promise.all([
-        transactionsApi.list({
-          dateFrom: startDate.toISOString().split('T')[0],
-          accountId: selectedAccountId !== 'all' ? selectedAccountId : undefined,
-        }),
-        accounts.length ? Promise.resolve(accounts) : accountsApi.list(),
-      ]);
-      if (!accounts.length) setAccounts(accData);
-
-      if (data) {
-        processData(data);
-      }
-    } catch (err) {
-      console.error('Failed to load analytics:', err);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const processData = (transactions: any[]) => {
+  const processData = (transactions: Array<{ date: string; type: string; amount: number; category: string }>) => {
     const monthlyData: Record<string, { income: number; expenses: number; savings: number }> = {};
     const categoryData: Record<string, number> = {};
     let totalIncome = 0;
@@ -78,11 +45,11 @@ export default function AnalyticsPage() {
     transactions.forEach(tx => {
       const date = new Date(tx.date);
       const key = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
-      
+
       if (!monthlyData[key]) {
         monthlyData[key] = { income: 0, expenses: 0, savings: 0 };
       }
-      
+
       if (tx.type === 'income') {
         monthlyData[key].income += tx.amount;
         totalIncome += tx.amount;
@@ -124,26 +91,54 @@ export default function AnalyticsPage() {
     });
   };
 
+  useEffect(() => {
+    let ignore = false;
+    (async () => {
+      try {
+        setLoading(true);
+        if (!user) return;
+
+        const now = new Date();
+        let startDate: Date;
+
+        switch (timeRange) {
+          case 'monthly':
+            startDate = new Date(now.getFullYear(), now.getMonth() - 11, 1);
+            break;
+          case 'quarterly':
+            startDate = new Date(now.getFullYear() - 2, 0, 1);
+            break;
+          case 'yearly':
+            startDate = new Date(now.getFullYear() - 4, 0, 1);
+            break;
+          default:
+            startDate = new Date(now.getFullYear() - 1, 0, 1);
+        }
+
+        const [data, accData] = await Promise.all([
+          transactionsApi.list({
+            dateFrom: startDate.toISOString().split('T')[0],
+            accountId: selectedAccountId !== 'all' ? selectedAccountId : undefined,
+          }),
+          accounts.length ? Promise.resolve(accounts) : accountsApi.list(),
+        ]);
+        if (!ignore) {
+          if (!accounts.length) setAccounts(accData);
+          if (data) processData(data);
+        }
+      } catch (err) {
+        console.error('Failed to load analytics:', err);
+      } finally {
+        if (!ignore) setLoading(false);
+      }
+    })();
+    return () => { ignore = true; };
+  }, [timeRange, selectedAccountId]);
+
+
   if (loading) {
     return <div className="flex items-center justify-center h-64"><Loader2 className="h-8 w-8 animate-spin text-primary" /></div>;
   }
-
-  const CustomTooltip = ({ active, payload, label }: { active?: boolean; payload?: Array<{ value: number; name: string; color: string }>; label?: string }) => {
-    if (active && payload && payload.length) {
-      return (
-        <div className="bg-background border rounded-lg p-3 shadow-lg">
-          <p className="font-medium mb-2">{label}</p>
-          {payload.map((entry, index) => (
-            <p key={index} className="flex items-center gap-2 text-sm" style={{ color: entry.color }}>
-              <span className="w-2 h-2 rounded-full" style={{ backgroundColor: entry.color }} />
-              {entry.name}: {formatCurrency(entry.value)}
-            </p>
-          ))}
-        </div>
-      );
-    }
-    return null;
-  };
 
   return (
     <div className="space-y-6">
@@ -162,7 +157,7 @@ export default function AnalyticsPage() {
               ))}
             </SelectContent>
           </Select>
-          <Select value={timeRange} onValueChange={setTimeRange as any}>
+          <Select value={timeRange} onValueChange={(value) => setTimeRange(value as 'monthly' | 'quarterly' | 'yearly' | 'custom')}>
             <SelectTrigger className="w-[200px]"><SelectValue placeholder="Time range" /></SelectTrigger>
             <SelectContent>
               <SelectItem value="monthly">Last 12 Months</SelectItem>
@@ -318,4 +313,21 @@ function MetricCard({ title, value, icon: Icon, color }: { title: string; value:
       </CardContent>
     </Card>
   );
+}
+
+function CustomTooltip({ active, payload, label }: { active?: boolean; payload?: Array<{ value: number; name: string; color: string }>; label?: string }) {
+  if (active && payload && payload.length) {
+    return (
+      <div className="bg-background border rounded-lg p-3 shadow-lg">
+        <p className="font-medium mb-2">{label}</p>
+        {payload.map((entry, index) => (
+          <p key={index} className="flex items-center gap-2 text-sm" style={{ color: entry.color }}>
+            <span className="w-2 h-2 rounded-full" style={{ backgroundColor: entry.color }} />
+            {entry.name}: {formatCurrency(entry.value)}
+          </p>
+        ))}
+      </div>
+    );
+  }
+  return null;
 }

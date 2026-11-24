@@ -13,10 +13,10 @@ async function verifyToken(token: string): Promise<{ sub: string; email: string 
   }
 }
 
-export async function middleware(request: NextRequest) {
+export async function proxy(request: NextRequest) {
   const accessToken = request.cookies.get('access_token')?.value;
 
-  const protectedPaths = ['/dashboard', '/transactions', '/add-transaction', '/monthly', '/budgets', '/income', '/analytics', '/recurring', '/settings'];
+  const protectedPaths = ['/dashboard', '/transactions', '/add-transaction', '/import', '/monthly', '/budgets', '/income', '/analytics', '/recurring', '/settings'];
   const isProtectedPath = protectedPaths.some(path => request.nextUrl.pathname.startsWith(path));
 
   const authPaths = ['/auth/login', '/auth/signup', '/auth/forgot-password', '/auth/reset-password'];

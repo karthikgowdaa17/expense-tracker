@@ -16,8 +16,8 @@ export interface SyncResult {
   conflicts: Array<{
     entity: string;
     id: string;
-    serverData: any;
-    localData: any;
+    serverData: unknown;
+    localData: unknown;
   }>;
 }
 
@@ -26,7 +26,7 @@ export const syncApi = {
 
   triggerSync: () => api.post<SyncResult>('/api/sync/trigger', {}),
 
-  registerPendingChange: (entity: string, id: string, action: 'create' | 'update' | 'delete', data?: any) =>
+  registerPendingChange: (entity: string, id: string, action: 'create' | 'update' | 'delete', data?: unknown) =>
     api.post('/api/sync/pending', { entity, id, action, data }),
 
   clearPendingChanges: () => api.delete('/api/sync/pending'),

@@ -53,43 +53,45 @@ export default function BudgetsPage() {
   });
 
   useEffect(() => {
-    fetchData();
-  }, [currentMonth]);
+    let ignore = false;
+    (async () => {
+      try {
+        setLoading(true);
+        if (!user) return;
 
-  const fetchData = async () => {
-    try {
-      setLoading(true);
-      if (!user) return;
+        const { start, end } = getMonthRange(parseMonthKey(currentMonth));
 
-      const { start, end } = getMonthRange(parseMonthKey(currentMonth));
+        const [budRes, catRes, txRes] = await Promise.all([
+          budgetsApi.list(currentMonth),
+          categoriesApi.list(),
+          transactionsApi.list({
+            dateFrom: start.toISOString().split('T')[0],
+            dateTo: end.toISOString().split('T')[0],
+            type: 'expense',
+          }),
+        ]);
 
-      const [budRes, catRes, txRes] = await Promise.all([
-        budgetsApi.list(currentMonth),
-        categoriesApi.list(),
-        transactionsApi.list({
-          dateFrom: start.toISOString().split('T')[0],
-          dateTo: end.toISOString().split('T')[0],
-          type: 'expense',
-        }),
-      ]);
+        if (!ignore) {
+          setBudgets(budRes);
+          setCategories(catRes.filter((c) => c.type === 'expense'));
 
-      setBudgets(budRes);
-      setCategories(catRes.filter(c => c.type === 'expense'));
-
-      // compute spending per category name
-      const spendMap: Record<string, number> = {};
-      if (txRes) {
-        txRes.forEach((t) => {
-          spendMap[t.category] = (spendMap[t.category] || 0) + t.amount;
-        });
+          // compute spending per category name
+          const spendMap: Record<string, number> = {};
+          if (txRes) {
+            txRes.forEach((t) => {
+              spendMap[t.category] = (spendMap[t.category] || 0) + t.amount;
+            });
+          }
+          setSpending(spendMap);
+        }
+      } catch (err) {
+        console.error('Failed to load budgets:', err);
+      } finally {
+        if (!ignore) setLoading(false);
       }
-      setSpending(spendMap);
-    } catch (err) {
-      console.error('Failed to load budgets:', err);
-    } finally {
-      setLoading(false);
-    }
-  };
+    })();
+    return () => { ignore = true; };
+  }, [currentMonth, user]);
 
   const fetchSpendingForCategory = async (category: string): Promise<number> => {
     if (!user) return 0;
@@ -140,7 +142,35 @@ export default function BudgetsPage() {
       }
 
       setDialogOpen(false);
-      fetchData();
+      (async () => {
+        try {
+          setLoading(true);
+          if (!user) return;
+          const { start, end } = getMonthRange(parseMonthKey(currentMonth));
+          const [budRes, catRes, txRes] = await Promise.all([
+            budgetsApi.list(currentMonth),
+            categoriesApi.list(),
+            transactionsApi.list({
+              dateFrom: start.toISOString().split('T')[0],
+              dateTo: end.toISOString().split('T')[0],
+              type: 'expense',
+            }),
+          ]);
+          setBudgets(budRes);
+          setCategories(catRes.filter((c) => c.type === 'expense'));
+          const spendMap: Record<string, number> = {};
+          if (txRes) {
+            txRes.forEach((t) => {
+              spendMap[t.category] = (spendMap[t.category] || 0) + t.amount;
+            });
+          }
+          setSpending(spendMap);
+        } catch (err) {
+          console.error('Failed to load budgets:', err);
+        } finally {
+          setLoading(false);
+        }
+      })();
     } catch (err) {
       console.error('Failed to save budget:', err);
     }
@@ -149,7 +179,35 @@ export default function BudgetsPage() {
   const handleDelete = async (budget: Budget) => {
     try {
       await budgetsApi.delete(budget.id);
-      fetchData();
+      (async () => {
+        try {
+          setLoading(true);
+          if (!user) return;
+          const { start, end } = getMonthRange(parseMonthKey(currentMonth));
+          const [budRes, catRes, txRes] = await Promise.all([
+            budgetsApi.list(currentMonth),
+            categoriesApi.list(),
+            transactionsApi.list({
+              dateFrom: start.toISOString().split('T')[0],
+              dateTo: end.toISOString().split('T')[0],
+              type: 'expense',
+            }),
+          ]);
+          setBudgets(budRes);
+          setCategories(catRes.filter((c) => c.type === 'expense'));
+          const spendMap: Record<string, number> = {};
+          if (txRes) {
+            txRes.forEach((t) => {
+              spendMap[t.category] = (spendMap[t.category] || 0) + t.amount;
+            });
+          }
+          setSpending(spendMap);
+        } catch (err) {
+          console.error('Failed to load budgets:', err);
+        } finally {
+          setLoading(false);
+        }
+      })();
     } catch (err) {
       console.error('Failed to delete budget:', err);
     }

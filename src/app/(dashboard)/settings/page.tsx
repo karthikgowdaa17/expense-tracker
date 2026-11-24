@@ -12,7 +12,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { formatCurrency } from '@/utils/currency';
 import { generateTransactionFingerprint, deduplicateTransactions } from '@/utils/fingerprint';
 import { suggestCategory } from '@/utils/categorySuggestion';
-import { Category, Account, PaymentMethod, AccountType, UserSettings, Profile } from '@/types';
+import { Category, Account, PaymentMethod, AccountType, TransactionType, Frequency, UserSettings, Profile } from '@/types';
 import { normalizePhonePeRow, parseCSV, extractMerchantKey } from '@/lib/import/phonepe';
 import {
   detectedLabel, resolveRefLabel, rowFingerprint, refExistingId, refForJsonRow,
@@ -27,6 +27,7 @@ import { z } from 'zod';
 import { AlertDialog, AlertDialogTrigger, AlertDialogContent, AlertDialogHeader, AlertDialogTitle, AlertDialogDescription, AlertDialogAction, AlertDialogCancel } from '@/components/ui/alert-dialog';
 import { useTheme } from 'next-themes';
 import { useRouter } from 'next/navigation';
+import Link from 'next/link';
 import { useAuth } from '@/lib/auth-context';
 import { categoriesApi } from '@/lib/api/categories';
 import { accountsApi } from '@/lib/api/accounts';
@@ -81,6 +82,36 @@ const DEFAULT_CATEGORIES = {
 const PAYMENT_METHODS: PaymentMethod[] = ['cash', 'upi', 'credit_card', 'debit_card', 'bank_transfer', 'other'];
 const ACCOUNT_TYPES: AccountType[] = ['cash', 'bank_account', 'credit_card', 'savings', 'investment', 'other'];
 
+interface PhonePePreviewRow {
+  date: string;
+  type: 'income' | 'expense' | 'transfer';
+  amount: number;
+  category: string;
+  description: string;
+  payment_method: string;
+  account: string;
+  notes: string;
+  accountRef: AccountRef;
+  isDuplicate: boolean;
+}
+
+type NormalizedImport = {
+  date: string;
+  type: 'income' | 'expense' | 'transfer';
+  amount: number;
+  category: string;
+  description: string;
+  payment_method: string;
+  account: string;
+  notes: string;
+  account_id: string | null;
+  transfer_direction: 'in' | 'out' | null;
+};
+
+interface ImportPreviewRow extends NormalizedImport {
+  isDuplicate: boolean;
+}
+
 export default function SettingsPage() {
   const [categories, setCategories] = useState<Category[]>([]);
   const [accounts, setAccounts] = useState<Account[]>([]);
@@ -107,8 +138,8 @@ export default function SettingsPage() {
 
   // PhonePe import state
   const [phonepeFile, setPhonepeFile] = useState<File | null>(null);
-  const [phonepeParsed, setPhonepeParsed] = useState<any[]>([]);
-  const [phonepePreview, setPhonepePreview] = useState<any[]>([]);
+  const [phonepeParsed, setPhonepeParsed] = useState<PhonePePreviewRow[]>([]);
+  const [phonepePreview, setPhonepePreview] = useState<PhonePePreviewRow[]>([]);
   const [phonepeSummary, setPhonepeSummary] = useState<{ total: number; income: number; expense: number; transfers: number; duplicates: number; newTx: number } | null>(null);
   const [phonepeImporting, setPhonepeImporting] = useState(false);
   const [phonepeError, setPhonepeError] = useState('');
@@ -126,8 +157,8 @@ export default function SettingsPage() {
 
   // Generic JSON Import state
   const [importFile, setImportFile] = useState<File | null>(null);
-  const [importParsed, setImportParsed] = useState<any>(null);
-  const [importPreview, setImportPreview] = useState<any[]>([]);
+  const [importParsed, setImportParsed] = useState<Record<string, unknown> | null>(null);
+  const [importPreview, setImportPreview] = useState<ImportPreviewRow[]>([]);
   const [importSummary, setImportSummary] = useState<{ total: number; income: number; expense: number; transfers: number; duplicates: number; newTx: number } | null>(null);
   const [importing, setImporting] = useState(false);
   const [importError, setImportError] = useState('');
@@ -219,19 +250,23 @@ export default function SettingsPage() {
   };
 
   useEffect(() => {
-    fetchData();
+    (async () => {
+      await fetchData();
+    })();
   }, [fetchData]);
 
   // Load learned category mappings from localStorage
   useEffect(() => {
-    if (typeof window !== 'undefined') {
-      const stored = localStorage.getItem('cat_memory');
-      if (stored) {
-        try {
-          setLearnedMap(JSON.parse(stored));
-        } catch {}
+    (async () => {
+      if (typeof window !== 'undefined') {
+        const stored = localStorage.getItem('cat_memory');
+        if (stored) {
+          try {
+            setLearnedMap(JSON.parse(stored));
+          } catch {}
+        }
       }
-    }
+    })();
   }, []);
 
   // Reset profile form when profile data loads
@@ -375,7 +410,7 @@ export default function SettingsPage() {
       if (!user) return;
 
       // Helper to delete all items of a resource
-      const deleteAll = async (listFn: () => Promise<any[]>, deleteFn: (id: string) => Promise<void>) => {
+      const deleteAll = async <T extends { id: string }>(listFn: () => Promise<T[]>, deleteFn: (id: string) => Promise<void>) => {
         const items = await listFn();
         for (const item of items) {
           await deleteFn(item.id);
@@ -433,7 +468,7 @@ export default function SettingsPage() {
     setPhonepeSummary(null);
 
     const text = await file.text();
-    let rows: any[] = [];
+    let rows: Record<string, unknown>[] = [];
     if (file.name.endsWith('.json')) {
       try {
         const data = JSON.parse(text);
@@ -461,7 +496,6 @@ export default function SettingsPage() {
       const { userId, ...rest } = n;
       return rest;
     });
-    setPhonepeParsed(uniqueNormalized);
 
     // Resolve an account for every row (PhonePe notes → detected accounts)
     const detectedByKey = new Map<string, DetectedAccount>();
@@ -481,7 +515,7 @@ export default function SettingsPage() {
         type: t.type,
         amount: t.amount,
         description: t.description,
-        payment_method: t.payment_method,
+        payment_method: t.payment_method as PaymentMethod,
         account: t.account,
         account_id: t.account_id ?? null,
       })));
@@ -498,19 +532,6 @@ export default function SettingsPage() {
 
     summarizePhonepe(withRefs);
   };
-
-  interface PhonePePreviewRow {
-    date: string;
-    type: 'income' | 'expense' | 'transfer';
-    amount: number;
-    category: string;
-    description: string;
-    payment_method: string;
-    account: string;
-    notes: string;
-    accountRef: AccountRef;
-    isDuplicate: boolean;
-  }
 
   const summarizePhonepe = (withDup: PhonePePreviewRow[]) => {
     const total = withDup.length;
@@ -562,7 +583,7 @@ export default function SettingsPage() {
         amount: Math.round(Number(t.amount) * 100) / 100,
         category: t.category,
         description: t.description,
-        payment_method: t.payment_method,
+        payment_method: t.payment_method as PaymentMethod,
         account: resolveRefLabel(t.accountRef, phonepeDetectedAccounts, accounts),
         account_id: refExistingId(t.accountRef) ?? createdByRef.get(t.accountRef) ?? null,
         transfer_direction: t.type === 'transfer' ? 'out' as const : null,
@@ -576,9 +597,9 @@ export default function SettingsPage() {
         try {
           await transactionsApi.create(row);
           insertedCount++;
-        } catch (e: any) {
+        } catch (e: unknown) {
           // assume conflict (duplicate fingerprint) -> skip
-          if (e.message?.includes('409') || e.message?.includes('duplicate') || e.message?.includes('UNIQUE')) {
+          if (e instanceof Error && (e.message.includes('409') || e.message.includes('duplicate') || e.message.includes('UNIQUE'))) {
             skippedCount++;
           } else {
             throw e;
@@ -593,8 +614,8 @@ export default function SettingsPage() {
       setPhonepeSummary(null);
       setPhonepeDetectedAccounts([]);
       fetchData();
-    } catch (err: any) {
-      setPhonepeError(err.message || 'Import failed');
+    } catch (err: unknown) {
+      setPhonepeError(err instanceof Error ? err.message : 'Import failed');
     } finally {
       setPhonepeImporting(false);
     }
@@ -611,11 +632,25 @@ export default function SettingsPage() {
   };
 
   // ---------- Generic JSON Import Helpers ----------
-  const normalizeTransaction = (tx: any, categories: Category[], accounts: Account[]): any => {
-    const rawType = (tx.type || 'expense').toString().toLowerCase();
+  const normalizeTransaction = (tx: Record<string, unknown>, categories: Category[], accounts: Account[]): NormalizedImport => {
+    const t = tx as {
+      type?: string;
+      amount?: number;
+      category?: string;
+      description?: string;
+      narration?: string;
+      payment_method?: string;
+      paymentMethod?: string;
+      account?: string;
+      notes?: string;
+      transfer_direction?: string;
+      date?: string;
+    };
+
+    const rawType = ((t.type || 'expense') as string).toLowerCase();
     const typeRaw = rawType.replace(/^cr$/, 'credit').replace(/^dr$/, 'debit');
     let type: 'income' | 'expense' | 'transfer' = 'expense';
-    
+
     if (typeRaw.includes('transfer')) {
       type = 'transfer';
     } else if (typeRaw.includes('credit') || typeRaw.includes('cr') || typeRaw.includes('received')) {
@@ -623,13 +658,13 @@ export default function SettingsPage() {
     } else if (typeRaw.includes('debit') || typeRaw.includes('dr') || typeRaw.includes('paid')) {
       type = 'expense';
     }
-    
-    const amount = Math.abs(Number(tx.amount) || 0);
-    
+
+    const amount = Math.abs(Number(t.amount) || 0);
+
     // Auto-categorize if no category provided or category doesn't exist for type
-    let category = tx.category || '';
+    let category = t.category || '';
     if (!category) {
-      const suggested = suggestCategory(tx.description || tx.narration || '', categories, type);
+      const suggested = suggestCategory(t.description || t.narration || '', categories, type);
       if (suggested) category = suggested.name;
     }
     if (!category) {
@@ -644,27 +679,28 @@ export default function SettingsPage() {
     }
 
     // Find matching account
-    let account = tx.account || 'Cash';
+    let account = t.account || 'Cash';
     const accExists = accounts.find(a => a.name === account);
     if (!accExists && accounts.length > 0) {
       account = accounts[0].name;
     }
 
     return {
-      date: (tx.date || '').split('T')[0],
+      date: (t.date || '').split('T')[0],
       type,
       amount,
       category,
-      description: (tx.description || tx.narration || '').slice(0, 200),
-      payment_method: (tx.payment_method || tx.paymentMethod || 'cash').toLowerCase(),
+      description: (t.description || t.narration || '').slice(0, 200),
+      payment_method: (t.payment_method || t.paymentMethod || 'cash').toLowerCase() as PaymentMethod,
       account,
-      notes: tx.notes || '',
-      transfer_direction: type === 'transfer' ? (tx.transfer_direction === 'in' ? 'in' : 'out') : null,
+      account_id: null,
+      notes: t.notes || '',
+      transfer_direction: type === 'transfer' ? (t.transfer_direction === 'in' ? 'in' : 'out') : null,
     };
   };
 
-  const detectImportDuplicates = async (transactions: any[]) => {
-    if (!user) return transactions;
+  const detectImportDuplicates = async (transactions: NormalizedImport[]): Promise<ImportPreviewRow[]> => {
+    if (!user) return transactions as ImportPreviewRow[];
     const existingTx = await transactionsApi.list();
     const existingFingerprints = new Set(
       existingTx.map(t => generateTransactionFingerprint({
@@ -673,7 +709,7 @@ export default function SettingsPage() {
         type: t.type,
         amount: t.amount,
         description: t.description,
-        payment_method: t.payment_method,
+        payment_method: t.payment_method as PaymentMethod,
         account: t.account,
         account_id: t.account_id ?? null,
       }))
@@ -684,7 +720,7 @@ export default function SettingsPage() {
       type: t.type,
       amount: t.amount,
       description: t.description,
-      payment_method: t.payment_method,
+      payment_method: t.payment_method as PaymentMethod,
       account: t.account,
       account_id: t.account_id ?? null,
     }));
@@ -704,7 +740,7 @@ export default function SettingsPage() {
 
     try {
       const text = await file.text();
-      let data: any;
+      let data: unknown;
       try {
         data = JSON.parse(text);
       } catch {
@@ -718,19 +754,21 @@ export default function SettingsPage() {
         return;
       }
 
+      const backup = data as { transactions?: unknown; categories?: unknown; accounts?: unknown };
+
       if (!user) { setImportError('Not logged in'); return; }
 
       // Determine if it's a full backup or transaction-only
-      const isFullBackup = data.transactions !== undefined || data.categories !== undefined || data.accounts !== undefined;
-      
-      let transactions: any[] = [];
-      
+      const isFullBackup = backup.transactions !== undefined || backup.categories !== undefined || backup.accounts !== undefined;
+
+      let transactions: NormalizedImport[] = [];
+
       if (isFullBackup) {
         // Full backup format
-        transactions = Array.isArray(data.transactions) ? data.transactions : [];
+        transactions = Array.isArray(backup.transactions) ? (backup.transactions as NormalizedImport[]) : [];
       } else if (Array.isArray(data)) {
         // Transaction-only array format
-        transactions = data;
+        transactions = data as NormalizedImport[];
       } else {
         setImportError('Unsupported JSON format. Expected a full backup object or an array of transactions.');
         return;
@@ -741,7 +779,7 @@ export default function SettingsPage() {
         return;
       }
 
-      setImportParsed(data);
+      setImportParsed(data as Record<string, unknown>);
 
       // Normalize transactions
       const normalized = transactions.map(t => normalizeTransaction(t, categories, accounts))
@@ -754,7 +792,6 @@ export default function SettingsPage() {
 
       // Deduplicate within the file first
       const uniqueNormalized = deduplicateTransactions(normalized.map(n => ({ ...n, userId: user.id })));
-      setImportPreview(uniqueNormalized);
 
       // Detect duplicates against database
       const withDup = await detectImportDuplicates(uniqueNormalized);
@@ -770,8 +807,8 @@ export default function SettingsPage() {
       
       setImportSummary({ total, income, expense, transfers, duplicates, newTx });
 
-    } catch (err: any) {
-      setImportError(err.message || 'Failed to process file');
+    } catch (err: unknown) {
+      setImportError(err instanceof Error ? err.message : 'Failed to process file');
     }
   };
 
@@ -785,46 +822,53 @@ export default function SettingsPage() {
       if (!user) throw new Error('Not logged in');
 
       // If full backup, import categories, accounts, budgets, recurring first
-      if (importParsed && (importParsed.categories || importParsed.accounts || importParsed.budgets || importParsed.recurring_transactions)) {
+      const parsed = importParsed as {
+        categories?: Array<{ name: string; type: string; icon?: string; color?: string; is_default?: boolean }>;
+        accounts?: Array<{ name: string; type: string; bank_name?: string | null; account_number_last4?: string | null; opening_balance?: number; currency?: string; is_active?: boolean }>;
+        budgets?: Array<{ category_id: string; month: string; amount: number; notes?: string }>;
+        recurring_transactions?: Array<{ name: string; amount: number; category: string; subcategory?: string; description?: string; frequency: string; start_date: string; end_date?: string; payment_method: string; account: string; day_of_month?: number; day_of_week?: number; is_active?: boolean }>;
+      } | null;
+
+      if (parsed && (parsed.categories || parsed.accounts || parsed.budgets || parsed.recurring_transactions)) {
         // Import categories
-        if (importParsed.categories?.length) {
-          for (const c of importParsed.categories) {
+        if (parsed.categories?.length) {
+          for (const c of parsed.categories) {
             try {
               await categoriesApi.create({
                 name: c.name,
-                type: c.type,
+                type: c.type as TransactionType,
                 icon: c.icon,
                 color: c.color,
                 is_default: c.is_default,
               });
-            } catch (e: any) {
-              if (!(e.message?.includes('409') || e.message?.includes('duplicate') || e.message?.includes('UNIQUE'))) throw e;
+            } catch (e: unknown) {
+              if (!(e instanceof Error && (e.message.includes('409') || e.message.includes('duplicate') || e.message.includes('UNIQUE')))) throw e;
             }
           }
         }
 
         // Import accounts (with bank metadata when the export has it)
-        if (importParsed.accounts?.length) {
-          for (const a of importParsed.accounts) {
+        if (parsed.accounts?.length) {
+          for (const a of parsed.accounts) {
             try {
               await accountsApi.create({
                 name: a.name,
-                type: a.type,
+                type: a.type as AccountType,
                 bank_name: a.bank_name ?? null,
                 account_number_last4: a.account_number_last4 ?? null,
-                opening_balance: a.opening_balance,
-                currency: a.currency,
+                opening_balance: a.opening_balance ?? 0,
+                currency: a.currency || 'INR',
                 is_active: a.is_active ?? true,
               });
-            } catch (e: any) {
-              if (!(e.message?.includes('409') || e.message?.includes('duplicate') || e.message?.includes('UNIQUE'))) throw e;
+            } catch (e: unknown) {
+              if (!(e instanceof Error && (e.message.includes('409') || e.message.includes('duplicate') || e.message.includes('UNIQUE')))) throw e;
             }
           }
         }
 
         // Import budgets
-        if (importParsed.budgets?.length) {
-          for (const b of importParsed.budgets) {
+        if (parsed.budgets?.length) {
+          for (const b of parsed.budgets) {
             try {
               await budgetsApi.create({
                 category_id: b.category_id,
@@ -832,15 +876,15 @@ export default function SettingsPage() {
                 amount: b.amount,
                 notes: b.notes,
               });
-            } catch (e: any) {
-              if (!(e.message?.includes('409') || e.message?.includes('duplicate') || e.message?.includes('UNIQUE'))) throw e;
+            } catch (e: unknown) {
+              if (!(e instanceof Error && (e.message.includes('409') || e.message.includes('duplicate') || e.message.includes('UNIQUE')))) throw e;
             }
           }
         }
 
         // Import recurring transactions
-        if (importParsed.recurring_transactions?.length) {
-          for (const r of importParsed.recurring_transactions) {
+        if (parsed.recurring_transactions?.length) {
+          for (const r of parsed.recurring_transactions) {
             try {
               await recurringApi.create({
                 name: r.name,
@@ -848,24 +892,24 @@ export default function SettingsPage() {
                 category: r.category,
                 subcategory: r.subcategory,
                 description: r.description,
-                frequency: r.frequency,
+                frequency: r.frequency as Frequency,
                 start_date: r.start_date,
                 end_date: r.end_date,
-                payment_method: r.payment_method,
+                payment_method: r.payment_method as PaymentMethod,
                 account: r.account,
                 day_of_month: r.day_of_month,
                 day_of_week: r.day_of_week,
                 is_active: r.is_active ?? true,
               });
-            } catch (e: any) {
-              if (!(e.message?.includes('409') || e.message?.includes('duplicate') || e.message?.includes('UNIQUE'))) throw e;
+            } catch (e: unknown) {
+              if (!(e instanceof Error && (e.message.includes('409') || e.message.includes('duplicate') || e.message.includes('UNIQUE')))) throw e;
             }
           }
         }
       }
 
       // Import new transactions only; resolve account ids by (possibly newly imported) account name
-      const postImportAccounts = (importParsed && importParsed.accounts?.length)
+      const postImportAccounts = (parsed && parsed.accounts?.length)
         ? await accountsApi.list()
         : accounts;
       const accIdByLowerName = new Map(postImportAccounts.map(a => [a.name.toLowerCase(), a.id]));
@@ -878,7 +922,7 @@ export default function SettingsPage() {
           amount: Math.round(Number(t.amount) * 100) / 100,
           category: t.category,
           description: t.description,
-          payment_method: t.payment_method,
+          payment_method: t.payment_method as PaymentMethod,
           account: t.account,
           account_id: accIdByLowerName.get(String(t.account).toLowerCase()) ?? null,
           transfer_direction: t.type === 'transfer' ? (t.transfer_direction ?? 'out') : null,
@@ -898,8 +942,8 @@ export default function SettingsPage() {
         try {
           await transactionsApi.create(row);
           insertedCount++;
-        } catch (e: any) {
-          if (e.message?.includes('409') || e.message?.includes('duplicate') || e.message?.includes('UNIQUE')) {
+        } catch (e: unknown) {
+          if (e instanceof Error && (e.message.includes('409') || e.message.includes('duplicate') || e.message.includes('UNIQUE'))) {
             skippedCount++;
           } else {
             throw e;
@@ -913,8 +957,8 @@ export default function SettingsPage() {
       setImportPreview([]);
       setImportSummary(null);
       fetchData();
-    } catch (err: any) {
-      setImportError(err.message || 'Import failed');
+    } catch (err: unknown) {
+      setImportError(err instanceof Error ? err.message : 'Import failed');
     } finally {
       setImporting(false);
     }
@@ -1399,6 +1443,12 @@ export default function SettingsPage() {
             </CardHeader>
             <CardContent className="space-y-4">
               <p className="text-muted-foreground">Import data from a previously exported JSON file or a transaction-only JSON array.</p>
+              <p className="text-sm">
+                Have a bank statement PDF?{' '}
+                <Link href="/import" className="text-primary font-medium underline underline-offset-4">
+                  Import bank statement (PDF) →
+                </Link>
+              </p>
               <Input type="file" accept=".json" onChange={handleImportFile} disabled={importing} />
               {importError && (
                 <div className="flex items-start gap-3 rounded-lg border p-4 bg-destructive/10 text-destructive">
@@ -1597,7 +1647,7 @@ export default function SettingsPage() {
                                   const next = { ...updated[idx], accountRef: val };
                                   // Recompute duplicate status with the new account identity
                                   next.isDuplicate = phonepeExistingFps.has(rowFingerprint(
-                                    { ...next },
+                                    { ...next, payment_method: next.payment_method as PaymentMethod },
                                     { userId: user?.id ?? '', detected: phonepeDetectedAccounts, accounts },
                                   ));
                                   updated[idx] = next;

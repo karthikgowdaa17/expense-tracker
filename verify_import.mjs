@@ -1,5 +1,5 @@
-const fs = require('fs');
-const path = require('path');
+import fs from 'fs';
+import path from 'path';
 
 // Load PhonePe JSON
 const jsonPath = path.join(__dirname, 'phonepe_aug2026.json');

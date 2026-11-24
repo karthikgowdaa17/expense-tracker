@@ -10,8 +10,6 @@ import { resetPassword } from '@/lib/api/auth';
 import { Loader2, Lock, Eye, EyeOff, ArrowLeft } from 'lucide-react';
 import Link from 'next/link';
 
-/* eslint-disable react-hooks/set-state-in-effect */
-
 function ResetPasswordForm() {
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
@@ -26,13 +24,14 @@ function ResetPasswordForm() {
   const searchParams = useSearchParams();
 
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    const tokenFromUrl = searchParams.get('token');
-    if (tokenFromUrl) {
-      setToken(tokenFromUrl);
-      setTokenValid(true);
-    }
-    setCheckingToken(false);
+    (async () => {
+      const tokenFromUrl = searchParams.get('token');
+      if (tokenFromUrl) {
+        setToken(tokenFromUrl);
+        setTokenValid(true);
+      }
+      setCheckingToken(false);
+    })();
   }, [searchParams]);
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -60,8 +59,8 @@ function ResetPasswordForm() {
       await resetPassword(token, password, confirmPassword);
       router.push('/auth/login?message=Password updated successfully');
       router.refresh();
-    } catch (err: any) {
-      setError(err.message || 'Failed to update password');
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Failed to update password');
     } finally {
       setLoading(false);
     }

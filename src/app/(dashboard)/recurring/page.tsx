@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -87,28 +87,30 @@ export default function RecurringPage() {
     },
   });
 
-  const fetchData = useCallback(async () => {
-    try {
-      setLoading(true);
-      if (!user) return;
-
-      const [recRes, catRes] = await Promise.all([
-        recurringApi.list(),
-        categoriesApi.list(),
-      ]);
-
-      setRecurring(recRes);
-      setCategories(catRes.filter(c => c.type === 'expense').map(c => c.name));
-    } catch (err) {
-      console.error('Failed to load recurring transactions:', err);
-    } finally {
-      setLoading(false);
-    }
-  }, [user]);
-
   useEffect(() => {
-    fetchData();
-  }, [fetchData]);
+    let ignore = false;
+    (async () => {
+      try {
+        setLoading(true);
+        if (!user) return;
+
+        const [recRes, catRes] = await Promise.all([
+          recurringApi.list(),
+          categoriesApi.list(),
+        ]);
+
+        if (!ignore) {
+          setRecurring(recRes);
+          setCategories(catRes.filter(c => c.type === 'expense').map(c => c.name));
+        }
+      } catch (err) {
+        console.error('Failed to load recurring transactions:', err);
+      } finally {
+        if (!ignore) setLoading(false);
+      }
+    })();
+    return () => { ignore = true; };
+  }, [user]);
 
   const handleOpenDialog = (rec?: RecurringTransaction) => {
     if (rec) {
@@ -154,7 +156,22 @@ export default function RecurringPage() {
       }
 
       setDialogOpen(false);
-      fetchData();
+      (async () => {
+        try {
+          setLoading(true);
+          if (!user) return;
+          const [recRes, catRes] = await Promise.all([
+            recurringApi.list(),
+            categoriesApi.list(),
+          ]);
+          setRecurring(recRes);
+          setCategories(catRes.filter(c => c.type === 'expense').map(c => c.name));
+        } catch (err) {
+          console.error('Failed to load recurring transactions:', err);
+        } finally {
+          setLoading(false);
+        }
+      })();
     } catch (err) {
       console.error('Failed to save recurring transaction:', err);
     }
@@ -163,7 +180,22 @@ export default function RecurringPage() {
   const handleDelete = async (rec: RecurringTransaction) => {
     try {
       await recurringApi.delete(rec.id);
-      fetchData();
+      (async () => {
+        try {
+          setLoading(true);
+          if (!user) return;
+          const [recRes, catRes] = await Promise.all([
+            recurringApi.list(),
+            categoriesApi.list(),
+          ]);
+          setRecurring(recRes);
+          setCategories(catRes.filter(c => c.type === 'expense').map(c => c.name));
+        } catch (err) {
+          console.error('Failed to load recurring transactions:', err);
+        } finally {
+          setLoading(false);
+        }
+      })();
     } catch (err) {
       console.error('Failed to delete recurring transaction:', err);
     }
@@ -172,7 +204,22 @@ export default function RecurringPage() {
   const handleToggleActive = async (rec: RecurringTransaction) => {
     try {
       await recurringApi.toggle(rec.id);
-      fetchData();
+      (async () => {
+        try {
+          setLoading(true);
+          if (!user) return;
+          const [recRes, catRes] = await Promise.all([
+            recurringApi.list(),
+            categoriesApi.list(),
+          ]);
+          setRecurring(recRes);
+          setCategories(catRes.filter(c => c.type === 'expense').map(c => c.name));
+        } catch (err) {
+          console.error('Failed to load recurring transactions:', err);
+        } finally {
+          setLoading(false);
+        }
+      })();
     } catch (err) {
       console.error('Failed to toggle recurring transaction:', err);
     }

@@ -13,6 +13,7 @@ export function SyncStatusIndicator() {
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [isStale, setIsStale] = useState(true);
 
   const fetchStatus = useCallback(async () => {
     try {
@@ -25,6 +26,17 @@ export function SyncStatusIndicator() {
       setLoading(false);
     }
   }, []);
+
+  useEffect(() => {
+    const id = setTimeout(() => {
+      if (!status || !status.lastSyncedAt) {
+        setIsStale(true);
+      } else {
+        setIsStale(Date.now() - new Date(status.lastSyncedAt).getTime() > 300000);
+      }
+    }, 0);
+    return () => clearTimeout(id);
+  }, [status]);
 
   const triggerSync = async () => {
     setSyncing(true);
@@ -40,10 +52,24 @@ export function SyncStatusIndicator() {
   };
 
   useEffect(() => {
-    fetchStatus();
-    const interval = setInterval(fetchStatus, 60000);
-    return () => clearInterval(interval);
-  }, [fetchStatus]);
+    let ignore = false;
+
+    const load = async () => {
+      try {
+        setError(null);
+        const data = await syncApi.getStatus();
+        if (!ignore) setStatus(data);
+      } catch (err) {
+        if (!ignore) setError(err instanceof Error ? err.message : 'Failed to fetch sync status');
+      } finally {
+        if (!ignore) setLoading(false);
+      }
+    };
+
+    load();
+    const interval = setInterval(load, 60000);
+    return () => { ignore = true; clearInterval(interval); };
+  }, []);
 
   if (loading) {
     return (
@@ -63,9 +89,6 @@ export function SyncStatusIndicator() {
     );
   }
 
-  const isStale = status.lastSyncedAt 
-    ? Date.now() - new Date(status.lastSyncedAt).getTime() > 300000 
-    : true;
 
   return (
     <DropdownMenu>

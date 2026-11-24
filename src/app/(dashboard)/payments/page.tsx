@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
@@ -36,56 +36,50 @@ export default function PaymentsPage() {
 
   const { user } = useAuth();
 
-  const fetchSummary = useCallback(async () => {
-    try {
-      setLoading(true);
-      if (!user) return;
 
-      const { start, end } = getMonthRange(parseMonthKey(currentMonth));
-      const data = await paymentsApi.getSummary({
-        dateFrom: start.toISOString().split('T')[0],
-        dateTo: end.toISOString().split('T')[0],
-      });
 
-      if (data) {
-        setSummary(data);
+  useEffect(() => {
+    let ignore = false;
+    (async () => {
+      try {
+        setLoading(true);
+        if (!user) return;
+        const { start, end } = getMonthRange(parseMonthKey(currentMonth));
+        const data = await paymentsApi.getSummary({
+          dateFrom: start.toISOString().split('T')[0],
+          dateTo: end.toISOString().split('T')[0],
+        });
+        if (!ignore && data) setSummary(data);
+      } catch (err) {
+        console.error('Failed to load payment summary:', err);
+      } finally {
+        if (!ignore) setLoading(false);
       }
-    } catch (err) {
-      console.error('Failed to load payment summary:', err);
-    } finally {
-      setLoading(false);
-    }
+    })();
+    return () => { ignore = true; };
   }, [currentMonth, user]);
 
-  const fetchTransactions = useCallback(async () => {
-    try {
-      setTransactionsLoading(true);
-      if (!user) return;
-
-      const { start, end } = getMonthRange(parseMonthKey(currentMonth));
-      const data = await paymentsApi.getTransactions({
-        dateFrom: start.toISOString().split('T')[0],
-        dateTo: end.toISOString().split('T')[0],
-        method: selectedMethod === 'all' ? undefined : selectedMethod,
-      });
-
-      if (data) {
-        setTransactions(data);
+  useEffect(() => {
+    let ignore = false;
+    (async () => {
+      try {
+        setTransactionsLoading(true);
+        if (!user) return;
+        const { start, end } = getMonthRange(parseMonthKey(currentMonth));
+        const data = await paymentsApi.getTransactions({
+          dateFrom: start.toISOString().split('T')[0],
+          dateTo: end.toISOString().split('T')[0],
+          method: selectedMethod === 'all' ? undefined : selectedMethod,
+        });
+        if (!ignore && data) setTransactions(data);
+      } catch (err) {
+        console.error('Failed to load payment transactions:', err);
+      } finally {
+        if (!ignore) setTransactionsLoading(false);
       }
-    } catch (err) {
-      console.error('Failed to load payment transactions:', err);
-    } finally {
-      setTransactionsLoading(false);
-    }
+    })();
+    return () => { ignore = true; };
   }, [currentMonth, user, selectedMethod]);
-
-  useEffect(() => {
-    fetchSummary();
-  }, [fetchSummary]);
-
-  useEffect(() => {
-    fetchTransactions();
-  }, [fetchTransactions]);
 
   const handlePreviousMonth = () => setCurrentMonth(prev => getMonthKey(getPreviousMonth(parseMonthKey(prev))));
   const handleNextMonth = () => setCurrentMonth(prev => getMonthKey(getNextMonth(parseMonthKey(prev))));

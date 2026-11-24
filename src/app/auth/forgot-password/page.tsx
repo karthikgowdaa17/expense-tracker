@@ -32,8 +32,8 @@ export default function ForgotPasswordPage() {
       if (result.dev_token) {
         setDevToken(result.dev_token);
       }
-    } catch (err: any) {
-      setError(err.message || 'Failed to send reset link');
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Failed to send reset link');
     } finally {
       setLoading(false);
     }

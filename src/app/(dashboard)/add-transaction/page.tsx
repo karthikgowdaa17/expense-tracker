@@ -86,26 +86,26 @@ export default function AddTransactionPage() {
   });
 
   useEffect(() => {
-    fetchCategories();
-  }, []);
-
-  const fetchCategories = async () => {
-    try {
-      if (!user) return;
-
-      const [data, accData] = await Promise.all([categoriesApi.list(), accountsApi.list()]);
-      setCategories(data);
-      setAccounts(accData);
-      // Preselect the first real account once known
-      const current = form.getValues('account');
-      if ((!current || current === 'bank_account') && accData.length > 0) {
-        const preferred = accData.find(a => a.name === 'Bank Account') || accData[0];
-        form.setValue('account', preferred.id);
+    let ignore = false;
+    (async () => {
+      try {
+        if (!user) return;
+        const [data, accData] = await Promise.all([categoriesApi.list(), accountsApi.list()]);
+        if (!ignore) {
+          setCategories(data);
+          setAccounts(accData);
+          const current = form.getValues('account');
+          if ((!current || current === 'bank_account') && accData.length > 0) {
+            const preferred = accData.find(a => a.name === 'Bank Account') || accData[0];
+            form.setValue('account', preferred.id);
+          }
+        }
+      } catch (err) {
+        console.error('Failed to load categories:', err);
       }
-    } catch (err) {
-      console.error('Failed to load categories:', err);
-    }
-  };
+    })();
+    return () => { ignore = true; };
+  }, []);
 
   const filteredCategories = categories.filter(c => c.type === form.watch('type'));
   const [suggestedCategory, setSuggestedCategory] = useState<Category | null>(null);
@@ -137,8 +137,22 @@ export default function AddTransactionPage() {
   }, [updateSuggestion]);
 
   useEffect(() => {
-    updateSuggestion();
-  }, [categories, updateSuggestion]);
+    (async () => {
+      const description = form.watch('description');
+      const type = form.watch('type') as TransactionType;
+      const userSelectedCategory = form.watch('category');
+
+      if (!description || userSelectedCategory) {
+        setSuggestedCategory(null);
+        setShowSuggestion(false);
+        return;
+      }
+
+      const suggested = suggestCategory(description, categories, type);
+      setSuggestedCategory(suggested);
+      setShowSuggestion(!!suggested);
+    })();
+  }, [categories]);
 
   const applySuggestion = () => {
     if (suggestedCategory) {

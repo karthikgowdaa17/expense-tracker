@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -60,40 +60,6 @@ export default function TransactionsPage() {
   const router = useRouter();
   const { user } = useAuth();
 
-  const fetchData = useCallback(async () => {
-    try {
-      setLoading(true);
-      setError(null);
-      if (!user) {
-        setLoading(false);
-        return;
-      }
-
-      // Filter on the server (indexed columns), not in the browser
-      const [txData, catData, accData] = await Promise.all([
-        transactionsApi.list({
-          search: filters.search || undefined,
-          type: filters.type !== 'all' ? filters.type : undefined,
-          category: filters.category !== 'all' ? filters.category : undefined,
-          paymentMethod: filters.paymentMethod !== 'all' ? filters.paymentMethod : undefined,
-          accountId: filters.accountId !== 'all' ? filters.accountId : undefined,
-          dateFrom: filters.dateFrom || undefined,
-          dateTo: filters.dateTo || undefined,
-        }),
-        categoriesApi.list(),
-        accountsApi.list(),
-      ]);
-
-      setTransactions(txData);
-      setCategories(catData.map(c => c.name));
-      setAccounts(accData);
-    } catch (err) {
-      console.error('Failed to load transactions:', err);
-      setError(err instanceof Error ? err.message : 'Failed to load transactions');
-    } finally {
-      setLoading(false);
-    }
-  }, [user, filters.search, filters.type, filters.category, filters.paymentMethod, filters.accountId, filters.dateFrom, filters.dateTo]);
 
   // Server applies the filters; only sorting happens client-side
   const filteredTransactions = [...transactions].sort((a, b) => {
@@ -108,8 +74,45 @@ export default function TransactionsPage() {
   const accountMap = buildAccountMap(accounts);
 
   useEffect(() => {
-    fetchData();
-  }, [fetchData]);
+    let ignore = false;
+    (async () => {
+      try {
+        setLoading(true);
+        setError(null);
+        if (!user) {
+          setLoading(false);
+          return;
+        }
+
+        // Filter on the server (indexed columns), not in the browser
+        const [txData, catData, accData] = await Promise.all([
+          transactionsApi.list({
+            search: filters.search || undefined,
+            type: filters.type !== 'all' ? filters.type : undefined,
+            category: filters.category !== 'all' ? filters.category : undefined,
+            paymentMethod: filters.paymentMethod !== 'all' ? filters.paymentMethod : undefined,
+            accountId: filters.accountId !== 'all' ? filters.accountId : undefined,
+            dateFrom: filters.dateFrom || undefined,
+            dateTo: filters.dateTo || undefined,
+          }),
+          categoriesApi.list(),
+          accountsApi.list(),
+        ]);
+
+        if (!ignore) {
+          setTransactions(txData);
+          setCategories(catData.map(c => c.name));
+          setAccounts(accData);
+        }
+      } catch (err) {
+        console.error('Failed to load transactions:', err);
+        if (!ignore) setError(err instanceof Error ? err.message : 'Failed to load transactions');
+      } finally {
+        if (!ignore) setLoading(false);
+      }
+    })();
+    return () => { ignore = true; };
+  }, [user, filters.search, filters.type, filters.category, filters.paymentMethod, filters.accountId, filters.dateFrom, filters.dateTo]);
 
   const handleEdit = (tx: Transaction) => {
     setEditingId(tx.id);
@@ -140,7 +143,39 @@ export default function TransactionsPage() {
       await transactionsApi.delete(tx.id);
 
       // Refetch to keep UI in sync with DB
-      await fetchData();
+      await (async () => {
+        try {
+          setLoading(true);
+          setError(null);
+          if (!user) {
+            setLoading(false);
+            return;
+          }
+
+          const [txData, catData, accData] = await Promise.all([
+            transactionsApi.list({
+              search: filters.search || undefined,
+              type: filters.type !== 'all' ? filters.type : undefined,
+              category: filters.category !== 'all' ? filters.category : undefined,
+              paymentMethod: filters.paymentMethod !== 'all' ? filters.paymentMethod : undefined,
+              accountId: filters.accountId !== 'all' ? filters.accountId : undefined,
+              dateFrom: filters.dateFrom || undefined,
+              dateTo: filters.dateTo || undefined,
+            }),
+            categoriesApi.list(),
+            accountsApi.list(),
+          ]);
+
+          setTransactions(txData);
+          setCategories(catData.map(c => c.name));
+          setAccounts(accData);
+        } catch (err) {
+          console.error('Failed to load transactions:', err);
+          setError(err instanceof Error ? err.message : 'Failed to load transactions');
+        } finally {
+          setLoading(false);
+        }
+      })();
       toast.success('Transaction deleted');
       // Notify other components (e.g., Dashboard) to refresh
       window.dispatchEvent(new CustomEvent('transactions-updated'));
@@ -210,7 +245,41 @@ export default function TransactionsPage() {
           <p className="font-medium">Failed to load transactions</p>
           <p className="text-sm text-muted-foreground">{error}</p>
         </div>
-        <Button variant="outline" onClick={fetchData}>
+        <Button variant="outline" onClick={() => {
+          (async () => {
+            try {
+              setLoading(true);
+              setError(null);
+              if (!user) {
+                setLoading(false);
+                return;
+              }
+
+              const [txData, catData, accData] = await Promise.all([
+                transactionsApi.list({
+                  search: filters.search || undefined,
+                  type: filters.type !== 'all' ? filters.type : undefined,
+                  category: filters.category !== 'all' ? filters.category : undefined,
+                  paymentMethod: filters.paymentMethod !== 'all' ? filters.paymentMethod : undefined,
+                  accountId: filters.accountId !== 'all' ? filters.accountId : undefined,
+                  dateFrom: filters.dateFrom || undefined,
+                  dateTo: filters.dateTo || undefined,
+                }),
+                categoriesApi.list(),
+                accountsApi.list(),
+              ]);
+
+              setTransactions(txData);
+              setCategories(catData.map(c => c.name));
+              setAccounts(accData);
+            } catch (err) {
+              console.error('Failed to load transactions:', err);
+              setError(err instanceof Error ? err.message : 'Failed to load transactions');
+            } finally {
+              setLoading(false);
+            }
+          })();
+        }}>
           Retry
         </Button>
       </div>
