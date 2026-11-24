@@ -45,7 +45,7 @@ export const recurringTransactionsRepository = {
     update(id, data) {
         const sets = [];
         const params = [];
-        const allowed = ['name', 'amount', 'category', 'subcategory', 'description', 'frequency', 'start_date', 'end_date', 'payment_method', 'account', 'day_of_month', 'day_of_week', 'is_active'];
+        const allowed = ['name', 'amount', 'category', 'subcategory', 'description', 'frequency', 'start_date', 'end_date', 'payment_method', 'account', 'day_of_month', 'day_of_week', 'is_active', 'last_generated'];
         for (const key of allowed) {
             if (data[key] !== undefined) {
                 sets.push(`${key} = ?`);

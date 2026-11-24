@@ -97,7 +97,7 @@ export function Header() {
                 </Link>
               </DropdownMenuItem>
               <DropdownMenuItem asChild>
-                <Link href="/settings" className="flex w-full">
+                <Link href="/notifications" className="flex w-full">
                   <Bell className="mr-2 h-4 w-4" />
                   <span>Notifications</span>
                 </Link>

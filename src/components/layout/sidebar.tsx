@@ -18,6 +18,7 @@ import {
   Menu,
   X,
   CreditCard,
+  Bell,
 } from 'lucide-react';
 import { useState } from 'react';
 
@@ -32,6 +33,7 @@ const navigation = [
   { name: 'Payments', href: '/payments', icon: CreditCard },
   { name: 'Analytics', href: '/analytics', icon: BarChart2 },
   { name: 'Recurring', href: '/recurring', icon: Repeat },
+  { name: 'Notifications', href: '/notifications', icon: Bell },
   { name: 'Settings', href: '/settings', icon: Settings },
 ];
 

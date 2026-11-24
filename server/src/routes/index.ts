@@ -7,6 +7,7 @@ import { accountsRepository, deleteAccountSafely } from '../repositories/account
 import { transactionsRepository } from '../repositories/transactionsRepository.js';
 import { budgetsRepository } from '../repositories/budgetsRepository.js';
 import { recurringTransactionsRepository } from '../repositories/recurringTransactionsRepository.js';
+import { notificationsRepository } from '../repositories/notificationsRepository.js';
 import { userSettingsRepository } from '../repositories/userSettingsRepository.js';
 
 import { profileSchema, categorySchema, accountSchema, transactionSchema, budgetSchema, recurringTransactionSchema, userSettingsSchema } from '../validation/schemas.js';
@@ -254,6 +255,46 @@ export async function handleTransactions(req: IncomingMessage, res: ServerRespon
   if (!userId) return sendJson(res, 401, { error: 'Authentication required' });
   const url = new URL(req.url!, `http://${req.headers.host}`);
   if (req.method === 'GET' && url.pathname === '/api/transactions') {
+    // Export: CSV or PDF
+    const format = url.searchParams.get('format') || 'csv';
+    if (format === 'csv' || format === 'pdf') {
+      const filters = {
+        dateFrom: url.searchParams.get('dateFrom') || undefined,
+        dateTo: url.searchParams.get('dateTo') || undefined,
+        type: url.searchParams.get('type') || undefined,
+        category: url.searchParams.get('category') || undefined,
+        paymentMethod: url.searchParams.get('paymentMethod') || undefined,
+        account: url.searchParams.get('account') || undefined,
+        accountId: url.searchParams.get('accountId') || undefined,
+        search: url.searchParams.get('search') || undefined,
+        limit: url.searchParams.get('limit') ? parseInt(url.searchParams.get('limit')!, 10) : undefined,
+        offset: url.searchParams.get('offset') ? parseInt(url.searchParams.get('offset')!, 10) : undefined,
+      };
+      const list = transactionsRepository.listByUser(userId, filters);
+
+      const header = 'date,type,amount,category,description,payment_method,account,transfer_direction,notes\n';
+      const rows = list.map(t =>
+        `${t.date},${t.type},${t.amount},"${t.category}","${t.description}",${t.payment_method},"${t.account}",${t.transfer_direction ?? ''},"${t.notes ?? ''}"`
+      ).join('\n');
+
+      if (format === 'csv') {
+        res.writeHead(200, {
+          'Content-Type': 'text/csv',
+          'Content-Disposition': `attachment; filename="transactions-${new Date().toISOString().split('T')[0]}.csv"`,
+        });
+        res.end(header + rows);
+        return;
+      }
+
+      // PDF placeholder: client renders CSV data via pdfjs-dist
+      res.writeHead(200, {
+        'Content-Type': 'application/pdf',
+        'Content-Disposition': `attachment; filename="transactions-${new Date().toISOString().split('T')[0]}.pdf"`,
+      });
+      res.end(header + rows);
+      return;
+    }
+
     const filters = {
       dateFrom: url.searchParams.get('dateFrom') || undefined,
       dateTo: url.searchParams.get('dateTo') || undefined,
@@ -285,6 +326,36 @@ export async function handleTransactions(req: IncomingMessage, res: ServerRespon
       if (suggested) {
         data.category = suggested;
       }
+    }
+
+    // Handle multi-account transfers: create an out-transaction in the source
+    // account and a matching in-transaction in the destination account, linked
+    // via split_from so they net out in the All Accounts view.
+    if (data.type === 'transfer' && body.to_account) {
+      const destAccount = accountsRepository.findByName(userId, body.to_account);
+      if (!destAccount) {
+        return sendJson(res, 400, { error: 'Destination account not found' });
+      }
+
+      const source = transactionsRepository.create(userId, {
+        ...data,
+        transfer_direction: 'out',
+        notes: data.notes ? `Transfer to ${body.to_account}. ${data.notes}` : `Transfer to ${body.to_account}`,
+      } as any);
+
+      const destination = transactionsRepository.create(userId, {
+        ...data,
+        type: 'income',
+        transfer_direction: 'in',
+        account: destAccount.name,
+        account_id: destAccount.id,
+        split_from: source.id,
+        notes: data.notes ? `Transfer from ${data.account}. ${data.notes}` : `Transfer from ${data.account}`,
+      } as any);
+
+      eventBus.publish({ type: 'transaction.created', payload: source });
+      eventBus.publish({ type: 'transaction.created', payload: destination });
+      return sendJson(res, 201, { source, destination });
     }
 
     const created = transactionsRepository.create(userId, data);
@@ -326,6 +397,31 @@ export async function handleBudgets(req: IncomingMessage, res: ServerResponse) {
     const data = validate(budgetSchema, body);
     const created = budgetsRepository.create(userId, data);
     eventBus.publish({ type: 'budget.created', payload: created });
+
+    // Over-budget alert: check if current month spending already exceeds this budget
+    const category = categoriesRepository.listByUser(userId).find(c => c.id === data.category_id);
+    if (category) {
+      const [year, month] = data.month.split('-').map(Number);
+      const start = new Date(year, month - 1, 1).toISOString().split('T')[0];
+      const end = new Date(year, month, 0).toISOString().split('T')[0];
+      const spending = transactionsRepository.listByUser(userId, {
+        dateFrom: start,
+        dateTo: end,
+        type: 'expense',
+        category: category.name,
+      });
+      const used = spending.reduce((sum, t) => sum + t.amount, 0);
+      if (used > created.amount) {
+        notificationsRepository.create(userId, {
+          type: 'over_budget',
+          title: `Over budget: ${category.name}`,
+          message: `You have spent ₹${used} against a budget of ₹${created.amount} for ${category.name} in ${data.month}.`,
+          related_entity_type: 'budget',
+          related_entity_id: created.id,
+        });
+      }
+    }
+
     return sendJson(res, 201, created);
   }
   const id = url.pathname.split('/').pop();
@@ -384,6 +480,96 @@ export async function handleRecurring(req: IncomingMessage, res: ServerResponse)
     eventBus.publish({ type: 'recurring_transaction.updated', payload: updated });
     return sendJson(res, 200, updated);
   }
+
+  // Auto-generate transactions from active recurring definitions that are due
+  if (req.method === 'POST' && url.pathname === '/api/recurring/generate') {
+    const list = recurringTransactionsRepository.listByUser(userId);
+    const now = new Date();
+    const nowStr: string = now.toISOString().split('T')[0]!;
+    const generated: any[] = [];
+
+    for (const rec of list) {
+      if (!rec.is_active) continue;
+      const endDate = rec.end_date;
+      if (endDate && endDate < nowStr) continue;
+
+      let due = false;
+      const lastGen = rec.last_generated ? new Date(rec.last_generated) : null;
+      const start = new Date(rec.start_date);
+
+      if (!lastGen) {
+        due = now >= start;
+      } else {
+        const lastGenStr: string = lastGen.toISOString().split('T')[0]!;
+        switch (rec.frequency) {
+          case 'daily':
+            due = nowStr > lastGenStr;
+            break;
+          case 'weekly':
+            due = now.getTime() - lastGen.getTime() >= 7 * 24 * 60 * 60 * 1000;
+            break;
+          case 'monthly':
+            due =
+              now.getFullYear() > lastGen.getFullYear() ||
+              (now.getFullYear() === lastGen.getFullYear() && now.getMonth() > lastGen.getMonth());
+            break;
+          case 'quarterly':
+            due =
+              now.getFullYear() > lastGen.getFullYear() ||
+              (now.getFullYear() === lastGen.getFullYear() &&
+                now.getMonth() - lastGen.getMonth() >= 3);
+            break;
+          case 'yearly':
+            due = now.getFullYear() > lastGen.getFullYear();
+            break;
+          default:
+            due = false;
+        }
+      }
+
+      if (!due) continue;
+
+      // Determine day of month for the generated transaction
+      const genDate = new Date(now);
+      if (rec.frequency === 'monthly' || rec.frequency === 'quarterly' || rec.frequency === 'yearly') {
+        const day = rec.day_of_month ?? now.getDate();
+        genDate.setDate(Math.min(day, new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate()));
+      }
+
+      const genDateStr = genDate.toISOString().split('T')[0];
+
+      const created = transactionsRepository.create(userId, {
+        date: genDateStr,
+        type: 'expense',
+        amount: rec.amount,
+        category: rec.category,
+        subcategory: rec.subcategory ?? undefined,
+        description: rec.description ?? rec.name,
+        payment_method: rec.payment_method,
+        account: rec.account,
+        account_id: undefined,
+        transfer_direction: null,
+        notes: `Recurring: ${rec.name}`,
+        is_recurring: true,
+        recurring_id: rec.id,
+      } as any);
+
+      recurringTransactionsRepository.update(rec.id, { last_generated: nowStr } as any);
+      generated.push(created);
+      eventBus.publish({ type: 'transaction.created', payload: created });
+    }
+
+    if (generated.length > 0) {
+      notificationsRepository.create(userId, {
+        type: 'recurring_generated',
+        title: 'Recurring transactions generated',
+        message: `${generated.length} recurring transaction(s) created for ${new Date().toISOString().split('T')[0]}.`,
+      });
+    }
+
+    return sendJson(res, 200, { generated: generated.length, transactions: generated });
+  }
+
   sendJson(res, 405, { error: 'Method not allowed' });
 }
 
@@ -546,6 +732,34 @@ export async function handleSync(req: IncomingMessage, res: ServerResponse) {
       version: '1.0.0',
       buildDate: new Date().toISOString(),
     });
+  }
+
+  sendJson(res, 405, { error: 'Method not allowed' });
+}
+
+export async function handleNotifications(req: IncomingMessage, res: ServerResponse) {
+  const userId = getUserId(req);
+  if (!userId) return sendJson(res, 401, { error: 'Authentication required' });
+  const url = new URL(req.url!, `http://${req.headers.host}`);
+
+  if (req.method === 'GET' && url.pathname === '/api/notifications') {
+    const unreadOnly = url.searchParams.get('unread') === 'true';
+    const list = notificationsRepository.listByUser(userId, unreadOnly);
+    return sendJson(res, 200, list);
+  }
+
+  const id = url.pathname.split('/').pop();
+  if (req.method === 'PATCH' && id && url.pathname.startsWith('/api/notifications/')) {
+    if (url.pathname.endsWith('/read')) {
+      const ok = notificationsRepository.markRead(id);
+      if (!ok) return sendJson(res, 404, { error: 'Not found' });
+      return sendJson(res, 200, { success: true });
+    }
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/notifications/mark-all-read') {
+    const count = notificationsRepository.markAllRead(userId);
+    return sendJson(res, 200, { success: true, count });
   }
 
   sendJson(res, 405, { error: 'Method not allowed' });

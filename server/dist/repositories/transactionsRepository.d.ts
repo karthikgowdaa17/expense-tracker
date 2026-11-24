@@ -7,6 +7,7 @@ export declare const transactionsRepository: {
         category?: string;
         paymentMethod?: string;
         account?: string;
+        accountId?: string;
         search?: string;
         limit?: number;
         offset?: number;
@@ -21,6 +22,8 @@ export declare const transactionsRepository: {
         description: any;
         payment_method: any;
         account: any;
+        account_id: any;
+        transfer_direction: any;
         notes: any;
         is_recurring: boolean;
         recurring_id: any;
@@ -40,6 +43,29 @@ export declare const transactionsRepository: {
         description: any;
         payment_method: any;
         account: any;
+        account_id: any;
+        transfer_direction: any;
+        notes: any;
+        is_recurring: boolean;
+        recurring_id: any;
+        split_from: any;
+        fingerprint: any;
+        created_at: any;
+        updated_at: any;
+    } | undefined;
+    getByIdForUser(id: string, userId: string): {
+        id: any;
+        user_id: any;
+        date: any;
+        type: any;
+        amount: any;
+        category: any;
+        subcategory: any;
+        description: any;
+        payment_method: any;
+        account: any;
+        account_id: any;
+        transfer_direction: any;
         notes: any;
         is_recurring: boolean;
         recurring_id: any;
@@ -59,6 +85,8 @@ export declare const transactionsRepository: {
         description: any;
         payment_method: any;
         account: any;
+        account_id: any;
+        transfer_direction: any;
         notes: any;
         is_recurring: boolean;
         recurring_id: any;
@@ -67,7 +95,7 @@ export declare const transactionsRepository: {
         created_at: any;
         updated_at: any;
     };
-    update(id: string, data: Partial<TransactionInput>): {
+    update(id: string, userId: string, data: Partial<TransactionInput>): {
         id: any;
         user_id: any;
         date: any;
@@ -78,6 +106,8 @@ export declare const transactionsRepository: {
         description: any;
         payment_method: any;
         account: any;
+        account_id: any;
+        transfer_direction: any;
         notes: any;
         is_recurring: boolean;
         recurring_id: any;
@@ -86,7 +116,7 @@ export declare const transactionsRepository: {
         created_at: any;
         updated_at: any;
     } | undefined;
-    delete(id: string): boolean;
+    delete(id: string, userId: string): boolean;
     getByFingerprint(userId: string, fingerprint: string): {
         id: any;
         user_id: any;
@@ -98,6 +128,8 @@ export declare const transactionsRepository: {
         description: any;
         payment_method: any;
         account: any;
+        account_id: any;
+        transfer_direction: any;
         notes: any;
         is_recurring: boolean;
         recurring_id: any;

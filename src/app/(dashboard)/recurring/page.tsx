@@ -10,8 +10,9 @@ import { Dialog, DialogTrigger, DialogContent, DialogHeader, DialogTitle, Dialog
 import { formatCurrency } from '@/utils/currency';
 import { formatDisplayDate } from '@/utils/date';
 import { useAuth } from '@/lib/auth-context';
+import { toast } from 'sonner';
 import { RecurringTransaction, Frequency, PaymentMethod, AccountType } from '@/types';
-import { Plus, Loader2, Edit, Trash2, Calendar, AlertTriangle } from 'lucide-react';
+import { Plus, Loader2, Edit, Trash2, Calendar, AlertTriangle, RefreshCw } from 'lucide-react';
 import { cn } from '@/utils/currency';
 import { useForm } from '@/components/ui/form';
 import { zodResolver } from '@hookform/resolvers/zod';
@@ -68,6 +69,7 @@ export default function RecurringPage() {
   const [loading, setLoading] = useState(true);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingRecurring, setEditingRecurring] = useState<RecurringTransaction | null>(null);
+  const [generating, setGenerating] = useState(false);
 
   const { user } = useAuth();
 
@@ -225,6 +227,26 @@ export default function RecurringPage() {
     }
   };
 
+  const handleGenerate = async () => {
+    if (!user) return;
+    setGenerating(true);
+    try {
+      const res = await recurringApi.generate();
+      toast.success(`Generated ${res.generated} transaction${res.generated !== 1 ? 's' : ''}`);
+      const [recRes, catRes] = await Promise.all([
+        recurringApi.list(),
+        categoriesApi.list(),
+      ]);
+      setRecurring(recRes);
+      setCategories(catRes.filter(c => c.type === 'expense').map(c => c.name));
+    } catch (err) {
+      console.error('Failed to generate recurring transactions:', err);
+      toast.error('Failed to generate recurring transactions');
+    } finally {
+      setGenerating(false);
+    }
+  };
+
   if (loading) {
     return <div className="flex items-center justify-center h-64"><Loader2 className="h-8 w-8 animate-spin text-primary" /></div>;
   }
@@ -241,6 +263,19 @@ export default function RecurringPage() {
         <Button onClick={() => handleOpenDialog()}>
           <Plus className="mr-2 h-4 w-4" />
           Add Recurring
+        </Button>
+        <Button onClick={handleGenerate} disabled={generating}>
+          {generating ? (
+            <>
+              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              Generating...
+            </>
+          ) : (
+            <>
+              <RefreshCw className="mr-2 h-4 w-4" />
+              Generate Now
+            </>
+          )}
         </Button>
       </div>
 

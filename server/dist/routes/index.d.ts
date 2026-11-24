@@ -11,5 +11,8 @@ export declare function handleAccounts(req: IncomingMessage, res: ServerResponse
 export declare function handleTransactions(req: IncomingMessage, res: ServerResponse): Promise<void>;
 export declare function handleBudgets(req: IncomingMessage, res: ServerResponse): Promise<void>;
 export declare function handleRecurring(req: IncomingMessage, res: ServerResponse): Promise<void>;
+export declare function handlePayments(req: IncomingMessage, res: ServerResponse): Promise<void>;
 export declare function handleUserSettings(req: IncomingMessage, res: ServerResponse): Promise<void>;
+export declare function handleSync(req: IncomingMessage, res: ServerResponse): Promise<void>;
+export declare function handleNotifications(req: IncomingMessage, res: ServerResponse): Promise<void>;
 //# sourceMappingURL=index.d.ts.map

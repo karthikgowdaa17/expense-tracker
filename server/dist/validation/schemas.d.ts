@@ -40,6 +40,8 @@ export declare const categorySchema: z.ZodObject<{
 export declare const accountSchema: z.ZodObject<{
     name: z.ZodString;
     type: z.ZodEnum<["cash", "bank_account", "credit_card", "savings", "investment", "other"]>;
+    bank_name: z.ZodNullable<z.ZodOptional<z.ZodString>>;
+    account_number_last4: z.ZodNullable<z.ZodOptional<z.ZodString>>;
     opening_balance: z.ZodDefault<z.ZodNumber>;
     currency: z.ZodDefault<z.ZodString>;
     is_active: z.ZodDefault<z.ZodBoolean>;
@@ -49,10 +51,14 @@ export declare const accountSchema: z.ZodObject<{
     name: string;
     opening_balance: number;
     is_active: boolean;
+    bank_name?: string | null | undefined;
+    account_number_last4?: string | null | undefined;
 }, {
     type: "cash" | "bank_account" | "credit_card" | "savings" | "investment" | "other";
     name: string;
     currency?: string | undefined;
+    bank_name?: string | null | undefined;
+    account_number_last4?: string | null | undefined;
     opening_balance?: number | undefined;
     is_active?: boolean | undefined;
 }>;
@@ -65,6 +71,8 @@ export declare const transactionSchema: z.ZodObject<{
     description: z.ZodString;
     payment_method: z.ZodEnum<["cash", "upi", "credit_card", "debit_card", "bank_transfer", "other"]>;
     account: z.ZodString;
+    account_id: z.ZodNullable<z.ZodOptional<z.ZodString>>;
+    transfer_direction: z.ZodNullable<z.ZodOptional<z.ZodEnum<["in", "out"]>>>;
     notes: z.ZodOptional<z.ZodString>;
     is_recurring: z.ZodOptional<z.ZodBoolean>;
     recurring_id: z.ZodNullable<z.ZodOptional<z.ZodString>>;
@@ -78,6 +86,8 @@ export declare const transactionSchema: z.ZodObject<{
     account: string;
     category?: string | undefined;
     subcategory?: string | undefined;
+    account_id?: string | null | undefined;
+    transfer_direction?: "in" | "out" | null | undefined;
     notes?: string | undefined;
     is_recurring?: boolean | undefined;
     recurring_id?: string | null | undefined;
@@ -91,6 +101,8 @@ export declare const transactionSchema: z.ZodObject<{
     account: string;
     category?: string | undefined;
     subcategory?: string | undefined;
+    account_id?: string | null | undefined;
+    transfer_direction?: "in" | "out" | null | undefined;
     notes?: string | undefined;
     is_recurring?: boolean | undefined;
     recurring_id?: string | null | undefined;

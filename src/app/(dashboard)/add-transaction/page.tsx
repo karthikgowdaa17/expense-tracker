@@ -31,8 +31,15 @@ const transactionSchema = z.object({
   description: z.string().min(1, 'Description is required'),
   payment_method: z.enum(['cash', 'upi', 'credit_card', 'debit_card', 'bank_transfer', 'other']),
   account: z.string().min(1, 'Account is required'),
+  to_account: z.string().optional(),
   notes: z.string().optional(),
-});
+}).refine(
+  (data) => data.type !== 'transfer' || (!!data.to_account && data.to_account !== data.account),
+  {
+    message: 'Destination account is required for transfers',
+    path: ['to_account'],
+  }
+);
 
 type TransactionFormData = z.infer<typeof transactionSchema>;
 
@@ -81,6 +88,7 @@ export default function AddTransactionPage() {
       description: '',
       payment_method: 'upi',
       account: 'bank_account',
+      to_account: '',
       notes: '',
     },
   });
@@ -168,10 +176,14 @@ export default function AddTransactionPage() {
       if (!user) return;
 
       const selectedAccount = accounts.find(a => a.id === data.account);
+      const destAccount =
+        data.type === 'transfer' ? accounts.find(a => a.id === data.to_account) : null;
+
       await transactionsApi.create({
         ...data,
         account: selectedAccount ? formatAccountLabel(selectedAccount) : data.account,
         account_id: selectedAccount ? selectedAccount.id : null,
+        ...(data.type === 'transfer' && destAccount ? { to_account: destAccount.name } : {}),
       });
 
       router.push('/transactions');
@@ -204,7 +216,14 @@ export default function AddTransactionPage() {
             <div className="grid gap-4 md:grid-cols-2">
               <div className="space-y-2">
                 <Label>Type</Label>
-                <Select onValueChange={(value) => form.setValue('type', value as TransactionType)} defaultValue={form.getValues('type')}>
+                <Select
+                  onValueChange={(value) => {
+                    const t = value as TransactionType;
+                    form.setValue('type', t);
+                    if (t !== 'transfer') form.setValue('to_account', '');
+                  }}
+                  defaultValue={form.getValues('type')}
+                >
                   <SelectTrigger>
                     <SelectValue placeholder="Select type" />
                   </SelectTrigger>
@@ -327,6 +346,39 @@ export default function AddTransactionPage() {
                 </Select>
               </div>
             </div>
+
+            {form.watch('type') === 'transfer' && (
+              <div className="space-y-2">
+                <Label>Destination Account</Label>
+                <Select
+                  onValueChange={(value) => form.setValue('to_account', value)}
+                  defaultValue={form.getValues('to_account')}
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder="Select destination account" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {accounts.map(a => (
+                      <SelectItem
+                        key={a.id}
+                        value={a.id}
+                        disabled={a.id === form.getValues('account')}
+                      >
+                        {formatAccountLabel(a)}
+                      </SelectItem>
+                    ))}
+                    {accounts.length === 0 && (
+                      <SelectItem disabled value="">
+                        No accounts available
+                      </SelectItem>
+                    )}
+                  </SelectContent>
+                </Select>
+                {form.formState.errors.to_account && (
+                  <p className="text-sm text-destructive">{form.formState.errors.to_account.message}</p>
+                )}
+              </div>
+            )}
 
             <div className="space-y-2">
               <Label>Notes (Optional)</Label>

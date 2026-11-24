@@ -60,7 +60,7 @@ process.on('uncaughtException', (error) => {
     console.error('Uncaught Exception:', error);
     shutdown('uncaughtException').catch(() => process.exit(1));
 });
-import { handleProfiles, handleCategories, handleAccounts, handleTransactions, handleBudgets, handleRecurring, handleUserSettings, ValidationError, } from './routes/index.js';
+import { handleProfiles, handleCategories, handleAccounts, handleTransactions, handleBudgets, handleRecurring, handleUserSettings, handleNotifications, handlePayments, handleSync, ValidationError, } from './routes/index.js';
 import { handleAuthLogin, handleAuthSignup, handleAuthRefresh, handleAuthMe, handleAuthForgotPassword, handleAuthResetPassword, handleAuthVerifyEmail, handleAuthResendVerification, } from './routes/auth.js';
 const clients = new Set();
 const ALLOWED_ORIGIN = 'http://localhost:3000';
@@ -176,9 +176,29 @@ async function handleRequest(req, res) {
             await handleRecurring(req, res);
             return;
         }
+        if (pathname === '/api/payments' || pathname.startsWith('/api/payments/')) {
+            setCorsHeaders(res);
+            await handlePayments(req, res);
+            return;
+        }
+        if (pathname === '/api/sync' || pathname.startsWith('/api/sync/')) {
+            setCorsHeaders(res);
+            await handleSync(req, res);
+            return;
+        }
+        if (pathname === '/api/version') {
+            setCorsHeaders(res);
+            await handleSync(req, res);
+            return;
+        }
         if (pathname === '/api/settings') {
             setCorsHeaders(res);
             await handleUserSettings(req, res);
+            return;
+        }
+        if (pathname === '/api/notifications' || pathname.startsWith('/api/notifications/')) {
+            setCorsHeaders(res);
+            await handleNotifications(req, res);
             return;
         }
     }
@@ -230,6 +250,92 @@ eventBus.subscribe((event) => {
     }
 });
 const PORT = Number(process.env.PORT) || 8080;
+// --- Auto-recurring cron: generate due recurring transactions every hour ---
+import { recurringTransactionsRepository } from './repositories/recurringTransactionsRepository.js';
+import { transactionsRepository } from './repositories/transactionsRepository.js';
+import { notificationsRepository } from './repositories/notificationsRepository.js';
+function generateDueRecurring() {
+    try {
+        const rows = db.prepare('SELECT DISTINCT user_id FROM recurring_transactions WHERE is_active = 1').all();
+        for (const { user_id } of rows) {
+            const list = recurringTransactionsRepository.listByUser(user_id);
+            const now = new Date();
+            const nowStr = now.toISOString().split('T')[0];
+            let generated = 0;
+            for (const rec of list) {
+                const endDate = rec.end_date;
+                if (endDate && endDate < nowStr)
+                    continue;
+                let due = false;
+                const lastGen = rec.last_generated ? new Date(rec.last_generated) : null;
+                const start = new Date(rec.start_date);
+                if (!lastGen) {
+                    due = now >= start;
+                }
+                else {
+                    const lastGenStr = lastGen.toISOString().split('T')[0];
+                    switch (rec.frequency) {
+                        case 'daily':
+                            due = nowStr > lastGenStr;
+                            break;
+                        case 'weekly':
+                            due = now.getTime() - lastGen.getTime() >= 7 * 24 * 60 * 60 * 1000;
+                            break;
+                        case 'monthly':
+                            due = now.getFullYear() > lastGen.getFullYear() || (now.getFullYear() === lastGen.getFullYear() && now.getMonth() > lastGen.getMonth());
+                            break;
+                        case 'quarterly':
+                            due = now.getFullYear() > lastGen.getFullYear() || (now.getFullYear() === lastGen.getFullYear() && now.getMonth() - lastGen.getMonth() >= 3);
+                            break;
+                        case 'yearly':
+                            due = now.getFullYear() > lastGen.getFullYear();
+                            break;
+                        default: due = false;
+                    }
+                }
+                if (!due)
+                    continue;
+                const genDate = new Date(now);
+                if (rec.frequency === 'monthly' || rec.frequency === 'quarterly' || rec.frequency === 'yearly') {
+                    const day = rec.day_of_month ?? now.getDate();
+                    genDate.setDate(Math.min(day, new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate()));
+                }
+                const genDateStr = genDate.toISOString().split('T')[0];
+                transactionsRepository.create(user_id, {
+                    date: genDateStr,
+                    type: 'expense',
+                    amount: rec.amount,
+                    category: rec.category,
+                    subcategory: rec.subcategory ?? undefined,
+                    description: rec.description ?? rec.name,
+                    payment_method: rec.payment_method,
+                    account: rec.account,
+                    account_id: undefined,
+                    transfer_direction: null,
+                    notes: `Recurring: ${rec.name}`,
+                    is_recurring: true,
+                    recurring_id: rec.id,
+                });
+                recurringTransactionsRepository.update(rec.id, { last_generated: nowStr });
+                generated++;
+                eventBus.publish({ type: 'transaction.created', payload: { user_id, recurring_id: rec.id } });
+            }
+            if (generated > 0) {
+                notificationsRepository.create(user_id, {
+                    type: 'recurring_generated',
+                    title: 'Recurring transactions generated',
+                    message: `${generated} recurring transaction(s) created for ${nowStr}.`,
+                });
+            }
+        }
+    }
+    catch (err) {
+        console.error('[Recurring Cron] Error generating recurring transactions:', err);
+    }
+}
+// Run immediately on startup, then every hour
+generateDueRecurring();
+setInterval(generateDueRecurring, 60 * 60 * 1000);
 server.listen(PORT, () => {
     console.log(`[Server] HTTP + WS server running on http://localhost:${PORT}`);
     console.log(`[Server] WebSocket available at ws://localhost:${PORT}`);

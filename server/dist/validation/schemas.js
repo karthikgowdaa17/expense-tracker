@@ -16,6 +16,8 @@ export const categorySchema = z.object({
 export const accountSchema = z.object({
     name: z.string().min(1),
     type: z.enum(['cash', 'bank_account', 'credit_card', 'savings', 'investment', 'other']),
+    bank_name: z.string().optional().nullable(),
+    account_number_last4: z.string().regex(/^\d{4}$/, 'Must be exactly 4 digits').optional().nullable(),
     opening_balance: z.number().default(0),
     currency: z.string().default('INR'),
     is_active: z.boolean().default(true),
@@ -29,6 +31,8 @@ export const transactionSchema = z.object({
     description: z.string().min(1),
     payment_method: z.enum(['cash', 'upi', 'credit_card', 'debit_card', 'bank_transfer', 'other']),
     account: z.string().min(1),
+    account_id: z.string().uuid().optional().nullable(),
+    transfer_direction: z.enum(['in', 'out']).optional().nullable(),
     notes: z.string().optional(),
     is_recurring: z.boolean().optional(),
     recurring_id: z.string().uuid().optional().nullable(),

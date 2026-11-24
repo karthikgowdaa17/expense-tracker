@@ -9,4 +9,5 @@ export const recurringApi = {
     api.patch<RecurringTransaction>(`/api/recurring/${id}`, data),
   delete: (id: string) => api.delete<void>(`/api/recurring/${id}`),
   toggle: (id: string) => api.post<RecurringTransaction>('/api/recurring/toggle', { id }),
+  generate: () => api.post<{ generated: number; transactions: RecurringTransaction[] }>('/api/recurring/generate', {}),
 };

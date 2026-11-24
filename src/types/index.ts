@@ -45,6 +45,8 @@ export interface Transaction {
   is_recurring?: boolean;
   recurring_id?: string;
   split_from?: string;
+  /** For type='transfer': name of the destination account the funds move into. */
+  to_account?: string | null;
   created_at: string;
   updated_at: string;
 }

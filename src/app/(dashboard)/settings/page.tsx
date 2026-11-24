@@ -1434,6 +1434,12 @@ export default function SettingsPage() {
                 <Download className="mr-2 h-4 w-4" />
                 Export All Data (JSON)
               </Button>
+              <Link
+                href="/export"
+                className="inline-flex items-center gap-1 text-sm text-primary underline underline-offset-4"
+              >
+                Export Transactions (CSV/PDF) →
+              </Link>
             </CardContent>
           </Card>
 

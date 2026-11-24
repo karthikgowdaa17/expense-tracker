@@ -1,4 +1,6 @@
 import { api } from './client';
+import { API_BASE_URL } from './config';
+import { getAccessToken } from './auth';
 import type { Transaction } from '@/types';
 
 export interface TransactionFilters {
@@ -33,4 +35,35 @@ export const transactionsApi = {
   update: (id: string, data: Partial<Transaction>) =>
     api.patch<Transaction>(`/api/transactions/${id}`, data),
   delete: (id: string) => api.delete<void>(`/api/transactions/${id}`),
+  exportTransactions: (filters: TransactionFilters, format: ExportFormat) =>
+    exportTransactions(filters, format),
+};
+
+export type ExportFormat = 'csv' | 'pdf';
+
+export const exportTransactions = async (
+  filters: TransactionFilters,
+  format: ExportFormat,
+): Promise<Blob> => {
+  const params = new URLSearchParams();
+  Object.entries(filters).forEach(([k, v]) => {
+    if (v !== undefined && v !== null) params.set(k, String(v));
+  });
+  params.set('format', format);
+
+  const token = getAccessToken();
+  const headers = new Headers();
+  if (token) headers.set('Authorization', `Bearer ${token}`);
+
+  const res = await fetch(`${API_BASE_URL}/api/transactions/export?${params}`, {
+    method: 'GET',
+    headers,
+  });
+
+  if (!res.ok) {
+    const body = await res.text().catch(() => '');
+    throw new Error(body || `Export failed (HTTP ${res.status})`);
+  }
+
+  return res.blob();
 };
